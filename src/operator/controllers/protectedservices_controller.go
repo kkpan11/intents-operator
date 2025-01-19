@@ -18,11 +18,12 @@ package controllers
 
 import (
 	"context"
-	otterizev1alpha3 "github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
 	"github.com/otterize/intents-operator/src/operator/controllers/protected_service_reconcilers"
+	"github.com/otterize/intents-operator/src/shared/errors"
 	"github.com/otterize/intents-operator/src/shared/operator_cloud_client"
 	"github.com/otterize/intents-operator/src/shared/reconcilergroup"
-	"github.com/otterize/intents-operator/src/shared/telemetries/telemetrysender"
+	"github.com/otterize/intents-operator/src/shared/telemetries/telemetriesconfig"
 	"github.com/samber/lo"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -54,27 +55,26 @@ func NewProtectedServiceReconciler(
 	client client.Client,
 	scheme *runtime.Scheme,
 	otterizeClient operator_cloud_client.CloudClient,
-	extNetpolHandler protected_service_reconcilers.ExternalNepolHandler,
 	enforcementDefaultState bool,
 	netpolEnforcementEnabled bool,
-	networkPolicyHandler protected_service_reconcilers.NetworkPolicyHandler,
+	effectivePolicySyncer protected_service_reconcilers.EffectivePolicyReconcilerGroup,
 ) *ProtectedServiceReconciler {
 	group := reconcilergroup.NewGroup(
 		protectedServicesGroupName,
 		client,
 		scheme,
-		&otterizev1alpha3.ProtectedService{},
-		otterizev1alpha3.ProtectedServicesFinalizerName,
+		&otterizev2alpha1.ProtectedService{},
+		otterizev2alpha1.ProtectedServicesFinalizerName,
 		protectedServiceLegacyFinalizers,
 	)
 
 	if netpolEnforcementEnabled {
-		defaultDenyReconciler := protected_service_reconcilers.NewDefaultDenyReconciler(client, extNetpolHandler, netpolEnforcementEnabled)
+		defaultDenyReconciler := protected_service_reconcilers.NewDefaultDenyReconciler(client, netpolEnforcementEnabled)
 		group.AddToGroup(defaultDenyReconciler)
 	}
 
 	if !enforcementDefaultState || !netpolEnforcementEnabled {
-		policyCleaner := protected_service_reconcilers.NewPolicyCleanerReconciler(client, networkPolicyHandler)
+		policyCleaner := protected_service_reconcilers.NewPolicyCleanerReconciler(client, effectivePolicySyncer)
 		group.AddToGroup(policyCleaner)
 	}
 
@@ -83,7 +83,7 @@ func NewProtectedServiceReconciler(
 		group.AddToGroup(otterizeCloudReconciler)
 	}
 
-	if telemetrysender.IsTelemetryEnabled() {
+	if telemetriesconfig.IsUsageTelemetryEnabled() {
 		telemetryReconciler := protected_service_reconcilers.NewTelemetryReconciler(client)
 		group.AddToGroup(telemetryReconciler)
 	}
@@ -101,11 +101,11 @@ func (r *ProtectedServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 // SetupWithManager sets up the controller with the Manager.
 func (r *ProtectedServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	err := ctrl.NewControllerManagedBy(mgr).
-		For(&otterizev1alpha3.ProtectedService{}).
+		For(&otterizev2alpha1.ProtectedService{}).
 		WithOptions(controller.Options{RecoverPanic: lo.ToPtr(true)}).
 		Complete(r)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	r.group.InjectRecorder(mgr.GetEventRecorderFor(protectedServicesGroupName))

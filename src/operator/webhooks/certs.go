@@ -11,17 +11,22 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/otterize/intents-operator/src/shared"
+	"math/big"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/otterize/intents-operator/src/shared/errors"
 	"github.com/sirupsen/logrus"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"github.com/spf13/viper"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"math/big"
-	"os"
-	"path/filepath"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"time"
 )
 
 const (
@@ -36,10 +41,55 @@ type CertificateBundle struct {
 	PrivateKeyPem []byte
 }
 
+const ngrokWebhookModeKey = "ngrok-webhook-mode"
+const ngrokWebhookModeDefault = false
+const ngrokTunnelLookupPortKey = "ngrok-tunnel-lookup-port"
+const ngrokTunnelLookupPortDefault = 4040
+
+func init() {
+	viper.SetDefault(ngrokWebhookModeKey, ngrokWebhookModeDefault)
+	viper.SetDefault(ngrokTunnelLookupPortKey, ngrokTunnelLookupPortDefault)
+}
+
+func GetAdditionalDebuggingWebhookDNSNames() []string {
+	if !viper.GetBool(ngrokWebhookModeKey) {
+		return make([]string, 0)
+	}
+
+	// Get public URL from ngrok local API.
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	req := shared.MustRet(http.NewRequestWithContext(timeoutCtx, http.MethodGet,
+		fmt.Sprintf("http://localhost:%d/api/tunnels", viper.GetInt(ngrokTunnelLookupPortKey)), nil))
+	resp := shared.MustRet(http.DefaultClient.Do(req))
+	if resp.StatusCode != http.StatusOK {
+		logrus.Panic("failed to get response from ngrok")
+	}
+	defer resp.Body.Close()
+
+	var response struct {
+		Tunnels []struct {
+			PublicURL string `json:"public_url"`
+		}
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	shared.Must(dec.Decode(&response))
+
+	if len(response.Tunnels) != 1 {
+		logrus.Panic("can only work with 1 ngrok tunnel")
+	}
+
+	parsedURLWithPort := shared.MustRet(url.Parse(response.Tunnels[0].PublicURL))
+	parsedURL := strings.Split(parsedURLWithPort.Host, ":")[0]
+
+	return []string{parsedURL, "host.minikube.internal"}
+}
+
 func GenerateSelfSignedCertificate(hostname string, namespace string) (CertificateBundle, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
-		return CertificateBundle{}, err
+		return CertificateBundle{}, errors.Wrap(err)
 	}
 	certificate := x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().Unix()),
@@ -55,15 +105,16 @@ func GenerateSelfSignedCertificate(hostname string, namespace string) (Certifica
 		IsCA:                  true,
 		DNSNames:              []string{hostname, fmt.Sprintf("%s.%s.svc", hostname, namespace), fmt.Sprintf("%s.%s.svc.cluster.local", hostname, namespace)},
 	}
+	certificate.DNSNames = append(certificate.DNSNames, GetAdditionalDebuggingWebhookDNSNames()...)
 	derCert, err := x509.CreateCertificate(rand.Reader, &certificate, &certificate, &privateKey.PublicKey, privateKey)
 	if err != nil {
-		return CertificateBundle{}, err
+		return CertificateBundle{}, errors.Wrap(err)
 	}
 
 	signedCert := &bytes.Buffer{}
 	err = pem.Encode(signedCert, &pem.Block{Type: "CERTIFICATE", Bytes: derCert})
 	if err != nil {
-		return CertificateBundle{}, err
+		return CertificateBundle{}, errors.Wrap(err)
 	}
 
 	privateKeyPem := pem.EncodeToMemory(&pem.Block{
@@ -77,9 +128,9 @@ func GenerateSelfSignedCertificate(hostname string, namespace string) (Certifica
 }
 
 func WriteCertToFiles(bundle CertificateBundle) error {
-	err := os.MkdirAll(CertDirPath, 0600)
+	err := os.MkdirAll(CertDirPath, 0750)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	certFilePath := filepath.Join(CertDirPath, CertFilename)
@@ -87,38 +138,20 @@ func WriteCertToFiles(bundle CertificateBundle) error {
 
 	err = os.WriteFile(certFilePath, bundle.CertPem, 0600)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 	return os.WriteFile(privateKeyFilePath, bundle.PrivateKeyPem, 0600)
 }
 
-func getKubeClient() (*kubernetes.Clientset, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, err
-	}
-	clientSet, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	return clientSet, nil
-}
-
-type patchValue struct {
-	Op    string      `json:"op"`
-	Path  string      `json:"path"`
-	Value interface{} `json:"value"`
-}
-
-func UpdateValidationWebHookCA(ctx context.Context, webHookName string, ca []byte) error {
+func UpdateMutationWebHookCA(ctx context.Context, webHookName string, ca []byte) error {
 	kubeClient, err := getKubeClient()
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
-	webhookConfig, err := kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations().Get(ctx, webHookName, metav1.GetOptions{})
+	webhookConfig, err := kubeClient.AdmissionregistrationV1().MutatingWebhookConfigurations().Get(ctx, webHookName, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	var newCA []patchValue
@@ -132,44 +165,28 @@ func UpdateValidationWebHookCA(ctx context.Context, webHookName string, ca []byt
 
 	newCAByte, err := json.Marshal(newCA)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	logrus.Infof("Installing new certificate in %s", webHookName)
-	_, err = kubeClient.AdmissionregistrationV1().ValidatingWebhookConfigurations().Patch(ctx, webHookName, types.JSONPatchType, newCAByte, metav1.PatchOptions{})
-	return err
+	_, err = kubeClient.AdmissionregistrationV1().MutatingWebhookConfigurations().Patch(ctx, webHookName, types.JSONPatchType, newCAByte, metav1.PatchOptions{})
+	return errors.Wrap(err)
 }
 
-func UpdateConversionWebhookCAs(ctx context.Context, k8sClient client.Client, ca []byte) error {
-	if err := updateConversionWebHookCA(ctx, "clientintents.k8s.otterize.com", k8sClient, ca); err != nil {
-		return fmt.Errorf("failed updating the CA of clientIntents conversion webhhok: %w", err)
+func getKubeClient() (*kubernetes.Clientset, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, errors.Wrap(err)
 	}
-	if err := updateConversionWebHookCA(ctx, "protectedservices.k8s.otterize.com", k8sClient, ca); err != nil {
-		return fmt.Errorf("failed updating the CA of protectedServices conversion webhhok: %w", err)
+	clientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, errors.Wrap(err)
 	}
-	if err := updateConversionWebHookCA(ctx, "kafkaserverconfigs.k8s.otterize.com", k8sClient, ca); err != nil {
-		return fmt.Errorf("failed updating the CA of kafkaServerConfigs conversion webhhok: %w", err)
-	}
-	return nil
+	return clientSet, nil
 }
 
-func updateConversionWebHookCA(ctx context.Context, crdName string, k8sClient client.Client, ca []byte) error {
-	crd := apiextensionsv1.CustomResourceDefinition{}
-	err := k8sClient.Get(ctx, types.NamespacedName{Name: crdName}, &crd)
-	if err != nil {
-		return fmt.Errorf("could not get ClientIntents CRD: %w", err)
-	}
-
-	updatedCRD := crd.DeepCopy()
-
-	if updatedCRD.Spec.Conversion == nil || updatedCRD.Spec.Conversion.Webhook == nil || updatedCRD.Spec.Conversion.Webhook.ClientConfig == nil {
-		return fmt.Errorf("clientsIntents CRD does not contain a proper conversion webhook defenition")
-	}
-	updatedCRD.Spec.Conversion.Webhook.ClientConfig.CABundle = ca
-	err = k8sClient.Patch(ctx, updatedCRD, client.MergeFrom(&crd))
-	if err != nil {
-		return fmt.Errorf("could not Patch ClientIntents CRD: %w", err)
-	}
-
-	return nil
+type patchValue struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value"`
 }

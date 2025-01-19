@@ -19,23 +19,21 @@ package controllers
 import (
 	"context"
 	"fmt"
-	otterizev1alpha3 "github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
+	"github.com/otterize/intents-operator/src/operator/controllers/access_annotation"
 	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers"
-	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/egress_network_policy"
-	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/exp"
-	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/ingress_network_policy"
-	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/port_egress_network_policy"
-	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/port_network_policy"
+	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/database"
 	"github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/protected_services"
 	"github.com/otterize/intents-operator/src/operator/controllers/kafkaacls"
-	"github.com/otterize/intents-operator/src/shared/initonce"
-	"github.com/otterize/intents-operator/src/shared/operator_cloud_client"
+	"github.com/otterize/intents-operator/src/operator/health"
+	"github.com/otterize/intents-operator/src/shared/errors"
+	"github.com/otterize/intents-operator/src/shared/operatorconfig/enforcement"
 	"github.com/otterize/intents-operator/src/shared/reconcilergroup"
 	"github.com/otterize/intents-operator/src/shared/serviceidresolver"
-	"github.com/otterize/intents-operator/src/shared/telemetries/telemetrysender"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,7 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
+	"time"
 )
 
 var intentsLegacyFinalizers = []string{
@@ -56,35 +54,18 @@ var intentsLegacyFinalizers = []string{
 	"intents.otterize.com/pods-finalizer",
 }
 
-type EnforcementConfig struct {
-	EnforcementDefaultState              bool
-	EnableNetworkPolicy                  bool
-	EnableKafkaACL                       bool
-	EnableIstioPolicy                    bool
-	EnableDatabaseReconciler             bool
-	EnableEgressNetworkPolicyReconcilers bool
-	EnableAWSPolicy                      bool
-}
-
 // IntentsReconciler reconciles a Intents object
 type IntentsReconciler struct {
-	group                   *reconcilergroup.Group
-	client                  client.Client
-	initOnce                initonce.InitOnce
-	networkPolicyReconciler *ingress_network_policy.NetworkPolicyReconciler
+	group  *reconcilergroup.Group
+	client client.Client
 }
 
 func NewIntentsReconciler(
 	client client.Client,
 	scheme *runtime.Scheme,
 	kafkaServerStore kafkaacls.ServersStore,
-	networkPolicyReconciler *ingress_network_policy.NetworkPolicyReconciler,
-	portNetpolReconciler *port_network_policy.PortNetworkPolicyReconciler,
-	egressNetpolReconciler *egress_network_policy.EgressNetworkPolicyReconciler,
-	portEgressNetpolReconciler *port_egress_network_policy.PortEgressNetworkPolicyReconciler,
 	restrictToNamespaces []string,
-	enforcementConfig EnforcementConfig,
-	otterizeClient operator_cloud_client.CloudClient,
+	enforcementConfig enforcement.Config,
 	operatorPodName string,
 	operatorPodNamespace string,
 	additionalReconcilers ...reconcilergroup.ReconcilerWithEvents,
@@ -92,88 +73,109 @@ func NewIntentsReconciler(
 
 	serviceIdResolver := serviceidresolver.NewResolver(client)
 	reconcilers := []reconcilergroup.ReconcilerWithEvents{
-		intents_reconcilers.NewCRDValidatorReconciler(client, scheme),
 		intents_reconcilers.NewPodLabelReconciler(client, scheme),
-		intents_reconcilers.NewKafkaACLReconciler(client, scheme, kafkaServerStore, enforcementConfig.EnableKafkaACL, kafkaacls.NewKafkaIntentsAdmin, enforcementConfig.EnforcementDefaultState, operatorPodName, operatorPodNamespace, serviceIdResolver),
-		intents_reconcilers.NewIstioPolicyReconciler(client, scheme, restrictToNamespaces, enforcementConfig.EnableIstioPolicy, enforcementConfig.EnforcementDefaultState),
-		networkPolicyReconciler,
+		intents_reconcilers.NewKafkaACLReconciler(client, scheme, kafkaServerStore, enforcementConfig.EnableKafkaACL, kafkaacls.NewKafkaIntentsAdmin, enforcementConfig.EnforcementDefaultState, operatorPodName, operatorPodNamespace, serviceIdResolver, enforcementConfig.EnforcedNamespaces),
+		intents_reconcilers.NewIstioPolicyReconciler(client, scheme, restrictToNamespaces, enforcementConfig.EnableIstioPolicy, enforcementConfig.EnforcementDefaultState, enforcementConfig.EnforcedNamespaces),
 	}
 	reconcilers = append(reconcilers, additionalReconcilers...)
 	reconcilersGroup := reconcilergroup.NewGroup(
 		"intents-reconciler",
 		client,
 		scheme,
-		&otterizev1alpha3.ClientIntents{},
-		otterizev1alpha3.ClientIntentsFinalizerName,
+		&otterizev2alpha1.ClientIntents{},
+		otterizev2alpha1.ClientIntentsFinalizerName,
 		intentsLegacyFinalizers,
 		reconcilers...,
 	)
 
-	reconcilersGroup.AddToGroup(portNetpolReconciler)
-
 	intentsReconciler := &IntentsReconciler{
-		group:                   reconcilersGroup,
-		client:                  client,
-		networkPolicyReconciler: networkPolicyReconciler,
+		group:  reconcilersGroup,
+		client: client,
 	}
 
-	if telemetrysender.IsTelemetryEnabled() {
-		telemetryReconciler := intents_reconcilers.NewTelemetryReconciler(client, scheme)
-		intentsReconciler.group.AddToGroup(telemetryReconciler)
-	}
-
-	if otterizeClient != nil {
-		otterizeCloudReconciler := intents_reconcilers.NewOtterizeCloudReconciler(client, scheme, otterizeClient, serviceIdResolver)
-		intentsReconciler.group.AddToGroup(otterizeCloudReconciler)
-	}
-
-	if enforcementConfig.EnableDatabaseReconciler {
-		databaseReconciler := exp.NewDatabaseReconciler(client, scheme, otterizeClient)
+	if enforcementConfig.EnableDatabasePolicy {
+		databaseReconciler := database.NewDatabaseReconciler(client, scheme)
 		intentsReconciler.group.AddToGroup(databaseReconciler)
-	}
-
-	if enforcementConfig.EnableEgressNetworkPolicyReconcilers {
-		intentsReconciler.group.AddToGroup(egressNetpolReconciler)
-		intentsReconciler.group.AddToGroup(portEgressNetpolReconciler)
 	}
 
 	return intentsReconciler
 }
 
 //+kubebuilder:rbac:groups=k8s.otterize.com,resources=clientintents,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=k8s.otterize.com,resources=postgresqlserverconfigs,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=k8s.otterize.com,resources=mysqlserverconfigs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=k8s.otterize.com,resources=clientintents/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=k8s.otterize.com,resources=clientintents/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=pods,verbs=get;update;patch;list;watch
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;update;patch;list;watch;create
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get
 //+kubebuilder:rbac:groups="networking.k8s.io",resources=networkpolicies,verbs=get;update;patch;list;watch;delete;create
 //+kubebuilder:rbac:groups="admissionregistration.k8s.io",resources=validatingwebhookconfigurations,verbs=get;update;patch;list
 //+kubebuilder:rbac:groups="apiextensions.k8s.io",resources=customresourcedefinitions,verbs=get;list;watch;update;create;patch
+//+kubebuilder:rbac:groups="apiextensions.k8s.io",resources=customresourcedefinitions,verbs=get;list;watch;update;create;patch
+// +kubebuilder:rbac:groups=iam.cnrm.cloud.google.com,resources=iampartialpolicies,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *IntentsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	err := r.initOnce.Do(func() error {
-		return r.intentsReconcilerInit(ctx)
-	})
+	intents := &otterizev2alpha1.ClientIntents{}
+
+	err := r.client.Get(ctx, req.NamespacedName, intents)
 	if err != nil {
-		return ctrl.Result{}, err
+		if k8serrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, errors.Wrap(err)
+	}
+	if intents.Status.UpToDate != false && intents.Status.ObservedGeneration != intents.Generation {
+		intentsCopy := intents.DeepCopy()
+		intentsCopy.Status.UpToDate = false
+		if err := r.client.Status().Patch(ctx, intentsCopy, client.MergeFrom(intents)); err != nil {
+			return ctrl.Result{}, errors.Wrap(err)
+		}
+		// we have to finish this reconcile loop here so that the group has a fresh copy of the intents
+		// and that we don't trigger an infinite loop
+		return ctrl.Result{}, nil
 	}
 
-	return r.group.Reconcile(ctx, req)
-}
+	health.UpdateLastReconcileStartTime()
 
-func (r *IntentsReconciler) intentsReconcilerInit(ctx context.Context) error {
-	return r.networkPolicyReconciler.CleanAllNamespaces(ctx)
+	timeoutCtx, cancel := context.WithTimeoutCause(ctx, 60*time.Second, errors.Errorf("timeout while reconciling client intents %s", req.NamespacedName))
+	defer cancel()
+
+	result, err := r.group.Reconcile(timeoutCtx, req)
+	if err != nil {
+		return ctrl.Result{}, errors.Wrap(err)
+	}
+
+	if intents.DeletionTimestamp == nil {
+		intentsCopy := intents.DeepCopy()
+		intentsCopy.Status.UpToDate = true
+		intentsCopy.Status.ObservedGeneration = intentsCopy.Generation
+		if err := r.client.Status().Patch(ctx, intentsCopy, client.MergeFrom(intents)); err != nil {
+			return ctrl.Result{}, errors.Wrap(err)
+		}
+	}
+
+	// Only consider reconcile ended if no error and no requeue.
+	if result.IsZero() {
+		health.UpdateLastReconcileEndTime()
+	}
+	return result, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *IntentsReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	err := ctrl.NewControllerManagedBy(mgr).
-		For(&otterizev1alpha3.ClientIntents{}).
+		For(&otterizev2alpha1.ClientIntents{}).
 		WithOptions(controller.Options{RecoverPanic: lo.ToPtr(true)}).
-		Watches(&source.Kind{Type: &otterizev1alpha3.ProtectedService{}}, handler.EnqueueRequestsFromMapFunc(r.mapProtectedServiceToClientIntents)).
+		Watches(&otterizev2alpha1.ProtectedService{}, handler.EnqueueRequestsFromMapFunc(r.mapProtectedServiceToClientIntents)).
+		Watches(&corev1.Endpoints{}, handler.EnqueueRequestsFromMapFunc(r.watchApiServerEndpoint)).
+		Watches(&otterizev2alpha1.PostgreSQLServerConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapPostgresInstanceNameToDatabaseIntents)).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.mapPodWithAccessAnnotationToClientIntents)).
 		Complete(r)
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	r.group.InjectRecorder(mgr.GetEventRecorderFor("intents-operator"))
@@ -181,15 +183,99 @@ func (r *IntentsReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return nil
 }
 
-func (r *IntentsReconciler) mapProtectedServiceToClientIntents(obj client.Object) []reconcile.Request {
-	protectedService := obj.(*otterizev1alpha3.ProtectedService)
-	logrus.Infof("Enqueueing client intents for protected services %s", protectedService.Name)
+func (r *IntentsReconciler) mapPodWithAccessAnnotationToClientIntents(ctx context.Context, obj client.Object) []reconcile.Request {
+	pod := obj.(*corev1.Pod)
+	logrus.Debugf("Enqueueing client intents for pod %s", pod.Name)
 
-	intentsToReconcile := r.getIntentsToProtectedService(protectedService)
+	clients, ok, err := access_annotation.ParseAccessAnnotations(pod)
+	if err != nil {
+		// If parsing fails an error will be recorded by the pods reconciler so here we just log it
+		logrus.WithError(err).Errorf("Failed to parse access annotations for pod %s", pod.Name)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0)
+	for _, clientService := range clients {
+		intentsToReconcile := r.getIntentsToService(ctx, clientService.Name, clientService.Namespace)
+		serviceRequests := r.mapIntentsToRequests(intentsToReconcile)
+
+		requests = append(requests, serviceRequests...)
+	}
+	return requests
+}
+
+func (r *IntentsReconciler) watchApiServerEndpoint(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetNamespace() != otterizev2alpha1.KubernetesAPIServerNamespace || obj.GetName() != otterizev2alpha1.KubernetesAPIServerName {
+		return nil
+	}
+
+	intentsToReconcile := r.getIntentsToAPIServerService(ctx)
 	return r.mapIntentsToRequests(intentsToReconcile)
 }
 
-func (r *IntentsReconciler) mapIntentsToRequests(intentsToReconcile []otterizev1alpha3.ClientIntents) []reconcile.Request {
+func (r *IntentsReconciler) getIntentsToAPIServerService(ctx context.Context) []otterizev2alpha1.ClientIntents {
+	intentsToReconcile := make([]otterizev2alpha1.ClientIntents, 0)
+	fullServerName := fmt.Sprintf("svc:%s.%s", otterizev2alpha1.KubernetesAPIServerName, otterizev2alpha1.KubernetesAPIServerNamespace)
+	var intentsToServer otterizev2alpha1.ClientIntentsList
+	err := r.client.List(
+		ctx,
+		&intentsToServer,
+		&client.MatchingFields{otterizev2alpha1.OtterizeTargetServerIndexField: fullServerName},
+	)
+	if err != nil {
+		logrus.WithError(err).Errorf("Failed to list client intents for client %s", fullServerName)
+		return nil
+	}
+	logrus.Debugf("Enqueueing client intents %v for api server", intentsToServer.Items)
+
+	intentsToReconcile = append(intentsToReconcile, intentsToServer.Items...)
+	return intentsToReconcile
+}
+
+func (r *IntentsReconciler) mapProtectedServiceToClientIntents(ctx context.Context, obj client.Object) []reconcile.Request {
+	protectedService := obj.(*otterizev2alpha1.ProtectedService)
+	logrus.Debugf("Enqueueing client intents for protected services %s", protectedService.Name)
+
+	intentsToReconcile := r.getIntentsToService(ctx, protectedService.Spec.Name, protectedService.Namespace)
+	return r.mapIntentsToRequests(intentsToReconcile)
+}
+
+func (r *IntentsReconciler) mapPostgresInstanceNameToDatabaseIntents(_ context.Context, obj client.Object) []reconcile.Request {
+	pgServerConf := obj.(*otterizev2alpha1.PostgreSQLServerConfig)
+	logrus.Infof("Enqueueing client intents for PostgreSQLServerConfig change %s", pgServerConf.Name)
+
+	intentsToReconcile := r.getIntentsToPostgresInstance(pgServerConf)
+
+	requests := make([]reconcile.Request, 0)
+	for _, clientIntents := range intentsToReconcile {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      clientIntents.Name,
+				Namespace: clientIntents.Namespace,
+			},
+		})
+	}
+	return requests
+}
+
+func (r *IntentsReconciler) getIntentsToPostgresInstance(pgServerConf *otterizev2alpha1.PostgreSQLServerConfig) []otterizev2alpha1.ClientIntents {
+	intentsList := otterizev2alpha1.ClientIntentsList{}
+	dbInstanceName := pgServerConf.Name
+	err := r.client.List(context.Background(),
+		&intentsList,
+		&client.MatchingFields{otterizev2alpha1.OtterizeTargetServerIndexField: dbInstanceName},
+	)
+	if err != nil {
+		logrus.Errorf("Failed to list client intents targeting %s: %v", dbInstanceName, err)
+	}
+
+	return intentsList.Items
+}
+
+func (r *IntentsReconciler) mapIntentsToRequests(intentsToReconcile []otterizev2alpha1.ClientIntents) []reconcile.Request {
 	requests := make([]reconcile.Request, 0)
 	for _, clientIntents := range intentsToReconcile {
 		request := reconcile.Request{
@@ -203,16 +289,17 @@ func (r *IntentsReconciler) mapIntentsToRequests(intentsToReconcile []otterizev1
 	return requests
 }
 
-func (r *IntentsReconciler) getIntentsToProtectedService(protectedService *otterizev1alpha3.ProtectedService) []otterizev1alpha3.ClientIntents {
-	intentsToReconcile := make([]otterizev1alpha3.ClientIntents, 0)
-	fullServerName := fmt.Sprintf("%s.%s", protectedService.Spec.Name, protectedService.Namespace)
-	var intentsToServer otterizev1alpha3.ClientIntentsList
-	err := r.client.List(context.Background(),
+func (r *IntentsReconciler) getIntentsToService(ctx context.Context, serviceName string, namespace string) []otterizev2alpha1.ClientIntents {
+	intentsToReconcile := make([]otterizev2alpha1.ClientIntents, 0)
+	fullServerName := fmt.Sprintf("%s.%s", serviceName, namespace)
+	var intentsToServer otterizev2alpha1.ClientIntentsList
+	err := r.client.List(ctx,
 		&intentsToServer,
-		&client.MatchingFields{otterizev1alpha3.OtterizeTargetServerIndexField: fullServerName},
+		&client.MatchingFields{otterizev2alpha1.OtterizeTargetServerIndexField: fullServerName},
 	)
 	if err != nil {
 		logrus.Errorf("Failed to list client intents for client %s: %v", fullServerName, err)
+		// Intentionally no return - we are not able to return errors in this flow currently
 	}
 
 	intentsToReconcile = append(intentsToReconcile, intentsToServer.Items...)
@@ -224,18 +311,21 @@ func (r *IntentsReconciler) getIntentsToProtectedService(protectedService *otter
 func (r *IntentsReconciler) InitIntentsServerIndices(mgr ctrl.Manager) error {
 	err := mgr.GetCache().IndexField(
 		context.Background(),
-		&otterizev1alpha3.ClientIntents{},
-		otterizev1alpha3.OtterizeTargetServerIndexField,
+		&otterizev2alpha1.ClientIntents{},
+		otterizev2alpha1.OtterizeTargetServerIndexField,
 		func(object client.Object) []string {
 			var res []string
-			intents := object.(*otterizev1alpha3.ClientIntents)
+			intents := object.(*otterizev2alpha1.ClientIntents)
 			if intents.Spec == nil {
 				return nil
 			}
 
-			for _, intent := range intents.GetCallsList() {
+			for _, intent := range intents.GetTargetList() {
 				if !intent.IsTargetServerKubernetesService() {
 					res = append(res, intent.GetServerFullyQualifiedName(intents.Namespace))
+				}
+				if intent.SQL != nil {
+					res = append(res, intent.GetTargetServerName())
 				}
 				fullyQualifiedSvcName, ok := intent.GetK8sServiceFullyQualifiedName(intents.Namespace)
 				if ok {
@@ -246,35 +336,33 @@ func (r *IntentsReconciler) InitIntentsServerIndices(mgr ctrl.Manager) error {
 			return res
 		})
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	err = mgr.GetCache().IndexField(
 		context.Background(),
-		&otterizev1alpha3.ClientIntents{},
-		otterizev1alpha3.OtterizeFormattedTargetServerIndexField,
+		&otterizev2alpha1.ClientIntents{},
+		otterizev2alpha1.OtterizeFormattedTargetServerIndexField,
 		func(object client.Object) []string {
 			var res []string
-			intents := object.(*otterizev1alpha3.ClientIntents)
+			intents := object.(*otterizev2alpha1.ClientIntents)
 			if intents.Spec == nil {
 				return nil
 			}
 
-			for _, intent := range intents.GetCallsList() {
-				serverName := intent.GetTargetServerName()
-				serverNamespace := intent.GetTargetServerNamespace(intents.Namespace)
-				formattedServerName := otterizev1alpha3.GetFormattedOtterizeIdentity(serverName, serverNamespace)
-				if !intent.IsTargetServerKubernetesService() {
-					res = append(res, formattedServerName)
-				} else {
-					res = append(res, "svc:"+formattedServerName)
+			for _, intent := range intents.GetTargetList() {
+				if intent.Internet != nil {
+					res = append(res, otterizev2alpha1.OtterizeInternetTargetName)
+					continue
 				}
+				service := intent.ToServiceIdentity(intents.Namespace)
+				res = append(res, service.GetFormattedOtterizeIdentityWithKind())
 			}
 
 			return res
 		})
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	return nil
@@ -290,7 +378,7 @@ func (r *IntentsReconciler) InitEndpointsPodNamesIndex(mgr ctrl.Manager) error {
 	err := mgr.GetCache().IndexField(
 		context.Background(),
 		&corev1.Endpoints{},
-		otterizev1alpha3.EndpointsPodNamesIndexField,
+		otterizev2alpha1.EndpointsPodNamesIndexField,
 		func(object client.Object) []string {
 			var res []string
 			endpoints := object.(*corev1.Endpoints)
@@ -312,7 +400,7 @@ func (r *IntentsReconciler) InitEndpointsPodNamesIndex(mgr ctrl.Manager) error {
 		})
 
 	if err != nil {
-		return err
+		return errors.Wrap(err)
 	}
 
 	return nil

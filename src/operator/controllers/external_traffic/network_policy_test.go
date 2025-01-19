@@ -2,7 +2,9 @@ package external_traffic
 
 import (
 	"context"
-	otterizev1alpha2 "github.com/otterize/intents-operator/src/operator/api/v1alpha2"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
+	"github.com/otterize/intents-operator/src/shared/operatorconfig/allowexternaltraffic"
+	"github.com/otterize/intents-operator/src/shared/serviceidresolver/serviceidentity"
 	"github.com/otterize/intents-operator/src/shared/testbase"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
@@ -20,11 +22,11 @@ type NetworkPolicyHandlerTestSuite struct {
 
 func (s *NetworkPolicyHandlerTestSuite) SetupTest() {
 	s.MocksSuiteBase.SetupTest()
-	s.handler = NewNetworkPolicyHandler(s.Client, &runtime.Scheme{}, true, false)
+	s.handler = NewNetworkPolicyHandler(s.Client, &runtime.Scheme{}, allowexternaltraffic.IfBlockedByOtterize, make([]serviceidentity.ServiceIdentity, 0), false)
 }
 
 func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAccessPolicyRemoval_createWhenNoIntentsEnabled_doNothing() {
-	s.handler.createEvenIfNoPreexistingNetworkPolicy = true
+	s.handler.allowExternalTraffic = allowexternaltraffic.Always
 
 	serviceName := "testservice"
 	serviceNamespace := "testnamespace"
@@ -33,14 +35,14 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 			Name:      "coolPolicy",
 			Namespace: serviceNamespace,
 			Labels: map[string]string{
-				otterizev1alpha2.OtterizeNetworkPolicy: serviceName,
+				otterizev2alpha1.OtterizeNetworkPolicy: serviceName,
 			},
 		},
 		Spec: v1.NetworkPolicySpec{
 			PolicyTypes: []v1.PolicyType{v1.PolicyTypeIngress},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					otterizev1alpha2.OtterizeServerLabelKey: serviceName,
+					otterizev2alpha1.OtterizeServiceLabelKey: serviceName,
 				},
 			},
 		},
@@ -57,14 +59,14 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 			Name:      "coolPolicy",
 			Namespace: serviceNamespace,
 			Labels: map[string]string{
-				otterizev1alpha2.OtterizeNetworkPolicy: serviceName,
+				otterizev2alpha1.OtterizeNetworkPolicy: serviceName,
 			},
 		},
 		Spec: v1.NetworkPolicySpec{
 			PolicyTypes: []v1.PolicyType{v1.PolicyTypeIngress},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					otterizev1alpha2.OtterizeServerLabelKey: serviceName,
+					otterizev2alpha1.OtterizeServiceLabelKey: serviceName,
 				},
 			},
 		},
@@ -75,21 +77,21 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 			Name:      "externalPolicy",
 			Namespace: serviceNamespace,
 			Labels: map[string]string{
-				otterizev1alpha2.OtterizeNetworkPolicyExternalTraffic: serviceName,
+				otterizev2alpha1.OtterizeNetworkPolicyExternalTraffic: serviceName,
 			},
 		},
 		Spec: v1.NetworkPolicySpec{
 			PolicyTypes: []v1.PolicyType{v1.PolicyTypeIngress},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					otterizev1alpha2.OtterizeServerLabelKey: serviceName,
+					otterizev2alpha1.OtterizeServiceLabelKey: serviceName,
 				},
 			},
 		},
 	}
 
 	firstList := s.Client.EXPECT().List(
-		gomock.Any(), gomock.Eq(&v1.NetworkPolicyList{}), client.MatchingLabels{otterizev1alpha2.OtterizeNetworkPolicy: serviceName}, &client.ListOptions{Namespace: serviceNamespace},
+		gomock.Any(), gomock.Eq(&v1.NetworkPolicyList{}), client.MatchingLabels{otterizev2alpha1.OtterizeNetworkPolicy: serviceName}, &client.ListOptions{Namespace: serviceNamespace},
 	).DoAndReturn(
 		func(_ any, list *v1.NetworkPolicyList, _ ...any) error {
 			list.Items = []v1.NetworkPolicy{*toBeRemovedPolicy}
@@ -98,7 +100,7 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 	)
 	secondList := s.Client.EXPECT().List(
 		gomock.Any(), gomock.Eq(&v1.NetworkPolicyList{}),
-		client.MatchingLabels{otterizev1alpha2.OtterizeNetworkPolicyExternalTraffic: serviceName},
+		client.MatchingLabels{otterizev2alpha1.OtterizeNetworkPolicyExternalTraffic: serviceName},
 		&client.ListOptions{Namespace: serviceNamespace},
 	).DoAndReturn(
 		func(_ any, list *v1.NetworkPolicyList, _ ...any) error {
@@ -121,14 +123,14 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 			Name:      "coolPolicy",
 			Namespace: serviceNamespace,
 			Labels: map[string]string{
-				otterizev1alpha2.OtterizeNetworkPolicy: serviceName,
+				otterizev2alpha1.OtterizeNetworkPolicy: serviceName,
 			},
 		},
 		Spec: v1.NetworkPolicySpec{
 			PolicyTypes: []v1.PolicyType{v1.PolicyTypeIngress},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					otterizev1alpha2.OtterizeServerLabelKey: serviceName,
+					otterizev2alpha1.OtterizeServiceLabelKey: serviceName,
 				},
 			},
 		},
@@ -139,21 +141,21 @@ func (s *NetworkPolicyHandlerTestSuite) TestNetworkPolicyHandler_HandleBeforeAcc
 			Name:      "coolPolicy",
 			Namespace: serviceNamespace,
 			Labels: map[string]string{
-				otterizev1alpha2.OtterizeNetworkPolicy: serviceName,
+				otterizev2alpha1.OtterizeNetworkPolicy: serviceName,
 			},
 		},
 		Spec: v1.NetworkPolicySpec{
 			PolicyTypes: []v1.PolicyType{v1.PolicyTypeIngress},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					otterizev1alpha2.OtterizeServerLabelKey: serviceName,
+					otterizev2alpha1.OtterizeServiceLabelKey: serviceName,
 				},
 			},
 		},
 	}
 
 	s.Client.EXPECT().List(
-		gomock.Any(), gomock.Eq(&v1.NetworkPolicyList{}), client.MatchingLabels{otterizev1alpha2.OtterizeNetworkPolicy: serviceName}, &client.ListOptions{Namespace: serviceNamespace},
+		gomock.Any(), gomock.Eq(&v1.NetworkPolicyList{}), client.MatchingLabels{otterizev2alpha1.OtterizeNetworkPolicy: serviceName}, &client.ListOptions{Namespace: serviceNamespace},
 	).DoAndReturn(
 		func(_ any, list *v1.NetworkPolicyList, _ ...any) error {
 			// two policies

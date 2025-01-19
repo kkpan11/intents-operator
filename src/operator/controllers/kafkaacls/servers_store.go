@@ -1,34 +1,34 @@
 package kafkaacls
 
 import (
-	"errors"
-	otterizev1alpha3 "github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
+	"github.com/otterize/intents-operator/src/shared/errors"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 var (
-	ServerSpecNotFound = errors.New("failed getting kafka server connection - server configuration specs not set")
+	ServerSpecNotFound = errors.NewSentinelError("failed getting kafka server connection - server configuration specs not set")
 )
 
 type ServersStore interface {
-	Add(config *otterizev1alpha3.KafkaServerConfig)
+	Add(config *otterizev2alpha1.KafkaServerConfig)
 	Remove(serverName string, namespace string)
 	Exists(serverName string, namespace string) bool
 	Get(serverName string, namespace string) (KafkaIntentsAdmin, error)
-	MapErr(f func(types.NamespacedName, *otterizev1alpha3.KafkaServerConfig, otterizev1alpha3.TLSSource) error) error
+	MapErr(f func(types.NamespacedName, *otterizev2alpha1.KafkaServerConfig, otterizev2alpha1.TLSSource) error) error
 }
 
 type ServersStoreImpl struct {
-	serversByName               map[types.NamespacedName]*otterizev1alpha3.KafkaServerConfig
+	serversByName               map[types.NamespacedName]*otterizev2alpha1.KafkaServerConfig
 	enableKafkaACLCreation      bool
-	tlsSourceFiles              otterizev1alpha3.TLSSource
+	tlsSourceFiles              otterizev2alpha1.TLSSource
 	IntentsAdminFactoryFunction IntentsAdminFactoryFunction
 	enforcementDefaultState     bool
 }
 
-func NewServersStore(tlsSourceFiles otterizev1alpha3.TLSSource, enableKafkaACLCreation bool, factoryFunc IntentsAdminFactoryFunction, enforcementDefaultState bool) *ServersStoreImpl {
+func NewServersStore(tlsSourceFiles otterizev2alpha1.TLSSource, enableKafkaACLCreation bool, factoryFunc IntentsAdminFactoryFunction, enforcementDefaultState bool) *ServersStoreImpl {
 	return &ServersStoreImpl{
-		serversByName:               map[types.NamespacedName]*otterizev1alpha3.KafkaServerConfig{},
+		serversByName:               map[types.NamespacedName]*otterizev2alpha1.KafkaServerConfig{},
 		enableKafkaACLCreation:      enableKafkaACLCreation,
 		tlsSourceFiles:              tlsSourceFiles,
 		IntentsAdminFactoryFunction: factoryFunc,
@@ -36,8 +36,8 @@ func NewServersStore(tlsSourceFiles otterizev1alpha3.TLSSource, enableKafkaACLCr
 	}
 }
 
-func (s *ServersStoreImpl) Add(config *otterizev1alpha3.KafkaServerConfig) {
-	name := types.NamespacedName{Name: config.Spec.Service.Name, Namespace: config.Namespace}
+func (s *ServersStoreImpl) Add(config *otterizev2alpha1.KafkaServerConfig) {
+	name := types.NamespacedName{Name: config.Spec.Workload.Name, Namespace: config.Namespace}
 	s.serversByName[name] = config
 }
 
@@ -62,10 +62,10 @@ func (s *ServersStoreImpl) Get(serverName string, namespace string) (KafkaIntent
 	return s.IntentsAdminFactoryFunction(*config, s.tlsSourceFiles, s.enableKafkaACLCreation, s.enforcementDefaultState)
 }
 
-func (s *ServersStoreImpl) MapErr(f func(types.NamespacedName, *otterizev1alpha3.KafkaServerConfig, otterizev1alpha3.TLSSource) error) error {
+func (s *ServersStoreImpl) MapErr(f func(types.NamespacedName, *otterizev2alpha1.KafkaServerConfig, otterizev2alpha1.TLSSource) error) error {
 	for serverName, config := range s.serversByName {
 		if err := f(serverName, config, s.tlsSourceFiles); err != nil {
-			return err
+			return errors.Wrap(err)
 		}
 	}
 

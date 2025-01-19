@@ -2,30 +2,27 @@ package serviceidresolver
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	"github.com/otterize/intents-operator/src/operator/api/v2alpha1"
+	"github.com/otterize/intents-operator/src/shared/errors"
+	"github.com/otterize/intents-operator/src/shared/serviceidresolver/podownerresolver"
 	"github.com/otterize/intents-operator/src/shared/serviceidresolver/serviceidentity"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
+	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strings"
 )
 
-var ErrPodNotFound = errors.New("pod not found")
+var (
+	ErrPodNotFound = errors.NewSentinelError("pod not found")
+)
 
 //+kubebuilder:rbac:groups="apps",resources=deployments;replicasets;daemonsets;statefulsets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="batch",resources=jobs;cronjobs,verbs=get;list;watch
 
 type ServiceResolver interface {
-	GetPodAnnotatedName(ctx context.Context, podName string, podNamespace string) (string, bool, error)
-	ResolveClientIntentToPod(ctx context.Context, intent v1alpha3.ClientIntents) (corev1.Pod, error)
-	ResolveIntentServerToPod(ctx context.Context, intent v1alpha3.Intent, namespace string) (corev1.Pod, error)
-	GetKubernetesServicesTargetingPod(ctx context.Context, pod *corev1.Pod) ([]corev1.Service, error)
+	ResolveClientIntentToPod(ctx context.Context, intent v2alpha1.ClientIntents) (corev1.Pod, error)
 	ResolvePodToServiceIdentity(ctx context.Context, pod *corev1.Pod) (serviceidentity.ServiceIdentity, error)
+	ResolveServiceIdentityToPodSlice(ctx context.Context, identity serviceidentity.ServiceIdentity) ([]corev1.Pod, bool, error)
+	ResolveIntentTargetToPod(ctx context.Context, target v2alpha1.Target, intentsObjNamespace string) (corev1.Pod, error)
 }
 
 type Resolver struct {
@@ -36,150 +33,53 @@ func NewResolver(c client.Client) *Resolver {
 	return &Resolver{client: c}
 }
 
-func ResolvePodToServiceIdentityUsingAnnotationOnly(pod *corev1.Pod) (string, bool) {
-	annotation, ok := pod.Annotations[viper.GetString(serviceNameOverrideAnnotationKey)]
-	return annotation, ok
-}
-
-func (r *Resolver) GetPodAnnotatedName(ctx context.Context, podName string, podNamespace string) (string, bool, error) {
-	var pod corev1.Pod
-	err := r.client.Get(ctx, types.NamespacedName{Name: podName, Namespace: podNamespace}, &pod)
-	if err != nil {
-		return "", false, err
-	}
-
-	annotation, ok := ResolvePodToServiceIdentityUsingAnnotationOnly(&pod)
-	return annotation, ok, nil
-}
-
-// ResolvePodToServiceIdentity resolves a pod object to its otterize service ID, referenced in intents objects.
-// It calls GetOwnerObject to recursively iterates over the pod's owner reference hierarchy until reaching a root owner reference.
-// In case the pod is annotated with an "intents.otterize.com/service-name" annotation, that annotation's value will override
-// any owner reference name as the service name.
 func (r *Resolver) ResolvePodToServiceIdentity(ctx context.Context, pod *corev1.Pod) (serviceidentity.ServiceIdentity, error) {
-	annotatedServiceName, ok := ResolvePodToServiceIdentityUsingAnnotationOnly(pod)
-	if ok {
-		return serviceidentity.ServiceIdentity{Name: annotatedServiceName}, nil
-	}
-	ownerObj, err := r.GetOwnerObject(ctx, pod)
-	if err != nil {
-		return serviceidentity.ServiceIdentity{}, err
-	}
-
-	resourceName := ownerObj.GetName()
-	// Deployments and other resources with pod templates have a dot in their name since they follow RFC 1123 subdomain
-	// naming convention. We use the dot as a separator between the service and the namespace. We replace the dot with
-	// an underscore, which isn't a valid character in a DNS name.
-	// So, for example, a deployment named "my-deployment.5.2.0" will be seen by Otterize as "my-deployment_5_2_0"
-	otterizeServiceName := strings.ReplaceAll(resourceName, ".", "_")
-
-	return serviceidentity.ServiceIdentity{Name: otterizeServiceName, OwnerObject: ownerObj}, nil
+	return podownerresolver.ResolvePodToServiceIdentity(ctx, r.client, pod)
 }
 
-// GetOwnerObject recursively iterates over the pod's owner reference hierarchy until reaching a root owner reference
-// and returns it.
+func (r *Resolver) ResolveServiceIdentityToPodSlice(ctx context.Context, identity serviceidentity.ServiceIdentity) ([]corev1.Pod, bool, error) {
+	labels, ok, err := v2alpha1.ServiceIdentityToLabelsForWorkloadSelection(ctx, r.client, identity)
+	if err != nil {
+		return nil, false, errors.Wrap(err)
+	}
+	if !ok {
+		return nil, false, nil
+	}
+
+	podList := &corev1.PodList{}
+	err = r.client.List(ctx, podList, &client.ListOptions{Namespace: identity.Namespace}, client.MatchingLabels(labels))
+	if err != nil {
+		return nil, false, errors.Wrap(err)
+	}
+	pods := lo.Filter(podList.Items, func(pod corev1.Pod, _ int) bool { return pod.DeletionTimestamp == nil })
+
+	return pods, len(pods) > 0, nil
+}
+
+func (r *Resolver) ResolveClientIntentToPod(ctx context.Context, intent v2alpha1.ClientIntents) (corev1.Pod, error) {
+	serviceID := intent.ToServiceIdentity()
+	pods, ok, err := r.ResolveServiceIdentityToPodSlice(ctx, serviceID)
+	if err != nil {
+		return corev1.Pod{}, errors.Wrap(err)
+	}
+	if !ok {
+		return corev1.Pod{}, ErrPodNotFound
+	}
+	return pods[0], nil
+}
+
+func (r *Resolver) ResolveIntentTargetToPod(ctx context.Context, target v2alpha1.Target, intentsObjNamespace string) (corev1.Pod, error) {
+	serviceID := target.ToServiceIdentity(intentsObjNamespace)
+	pods, ok, err := r.ResolveServiceIdentityToPodSlice(ctx, serviceID)
+	if err != nil {
+		return corev1.Pod{}, errors.Wrap(err)
+	}
+	if !ok {
+		return corev1.Pod{}, ErrPodNotFound
+	}
+	return pods[0], nil
+}
+
 func (r *Resolver) GetOwnerObject(ctx context.Context, pod *corev1.Pod) (client.Object, error) {
-	log := logrus.WithFields(logrus.Fields{"pod": pod.Name, "namespace": pod.Namespace})
-	var obj client.Object
-	obj = pod
-	for len(obj.GetOwnerReferences()) > 0 {
-		owner := obj.GetOwnerReferences()[0]
-		ownerObj := &unstructured.Unstructured{}
-		ownerObj.SetAPIVersion(owner.APIVersion)
-		ownerObj.SetKind(owner.Kind)
-		err := r.client.Get(ctx, types.NamespacedName{Name: owner.Name, Namespace: obj.GetNamespace()}, ownerObj)
-		if err != nil && k8serrors.IsForbidden(err) {
-			// We don't have permissions for further resolving of the owner object,
-			// and so we treat it as the identity.
-			log.WithError(err).WithFields(logrus.Fields{"owner": owner.Name, "ownerKind": obj.GetObjectKind().GroupVersionKind()}).Warning(
-				"permission error resolving owner, will use owner object as service identifier",
-			)
-			ownerObj.SetName(owner.Name)
-			return ownerObj, nil
-		} else if err != nil {
-			return nil, fmt.Errorf("error querying owner reference: %w", err)
-		}
-
-		// recurse parent owner reference
-		obj = ownerObj
-	}
-
-	log.WithFields(logrus.Fields{"owner": obj.GetName(), "ownerKind": obj.GetObjectKind().GroupVersionKind()}).Debug("pod resolved to owner name")
-	return obj, nil
-}
-
-func (r *Resolver) ResolveClientIntentToPod(ctx context.Context, intent v1alpha3.ClientIntents) (corev1.Pod, error) {
-	podsList := &corev1.PodList{}
-	labelSelector, err := intent.BuildPodLabelSelector()
-	if err != nil {
-		return corev1.Pod{}, err
-	}
-	err = r.client.List(ctx, podsList, client.MatchingLabelsSelector{Selector: labelSelector})
-	if err != nil {
-		return corev1.Pod{}, err
-	}
-	if len(podsList.Items) == 0 {
-		return corev1.Pod{}, ErrPodNotFound
-	}
-
-	for _, pod := range podsList.Items {
-		if pod.DeletionTimestamp != nil {
-			continue
-		}
-
-		return pod, nil
-	}
-
-	return corev1.Pod{}, ErrPodNotFound
-}
-
-func (r *Resolver) ResolveIntentServerToPod(ctx context.Context, intent v1alpha3.Intent, namespace string) (corev1.Pod, error) {
-	podsList := &corev1.PodList{}
-
-	formattedTargetServer := v1alpha3.GetFormattedOtterizeIdentity(intent.GetTargetServerName(), namespace)
-	err := r.client.List(
-		ctx,
-		podsList,
-		client.MatchingLabels{v1alpha3.OtterizeServerLabelKey: formattedTargetServer},
-		client.InNamespace(namespace),
-	)
-	if err != nil {
-		return corev1.Pod{}, err
-	}
-	if len(podsList.Items) == 0 {
-		return corev1.Pod{}, ErrPodNotFound
-	}
-
-	for _, pod := range podsList.Items {
-		if pod.DeletionTimestamp != nil {
-			continue
-		}
-
-		return pod, nil
-	}
-
-	return corev1.Pod{}, ErrPodNotFound
-}
-
-func (r *Resolver) GetKubernetesServicesTargetingPod(ctx context.Context, pod *corev1.Pod) ([]corev1.Service, error) {
-	serviceList := corev1.ServiceList{}
-	if err := r.client.List(ctx, &serviceList, &client.ListOptions{Namespace: pod.Namespace}); err != nil {
-		return nil, err
-	}
-
-	servicesTargetingPod := make([]corev1.Service, 0)
-	podLabels := pod.GetLabels()
-
-	// Iterate over the services in the namespace, check their selector (which pods they are pointing to)
-	// and compare to the pod's labels.
-	for _, service := range serviceList.Items {
-		for podLabelKey, podLabelVal := range podLabels {
-			svcSelectorVal, ok := service.Spec.Selector[podLabelKey]
-			if ok && svcSelectorVal == podLabelVal {
-				servicesTargetingPod = append(servicesTargetingPod, service)
-			}
-		}
-	}
-
-	return servicesTargetingPod, nil
+	return podownerresolver.GetOwnerObject(ctx, r.client, pod)
 }

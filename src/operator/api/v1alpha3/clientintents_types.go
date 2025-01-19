@@ -17,69 +17,74 @@ limitations under the License.
 package v1alpha3
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/otterize/intents-operator/src/shared/errors"
+	"github.com/otterize/intents-operator/src/shared/serviceidresolver/serviceidentity"
+
 	"github.com/otterize/intents-operator/src/shared/otterizecloud/graphqlclient"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"strconv"
-	"strings"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 const (
-	OtterizeAccessLabelPrefix                            = "intents.otterize.com/access"
-	OtterizeServiceAccessLabelPrefix                     = "intents.otterize.com/svc-access"
-	OtterizeAccessLabelKey                               = "intents.otterize.com/access-%s"
-	OtterizeSvcAccessLabelKey                            = "intents.otterize.com/svc-access-%s"
-	OtterizeClientLabelKey                               = "intents.otterize.com/client"
-	OtterizeServerLabelKey                               = "intents.otterize.com/server"
-	OtterizeKubernetesServiceLabelKeyPrefix              = "intents.otterize.com/k8s-svc"
-	OtterizeKubernetesServiceLabelKey                    = "intents.otterize.com/k8s-svc-%s"
-	OtterizeNamespaceLabelKey                            = "intents.otterize.com/namespace-name"
-	AllIntentsRemovedAnnotation                          = "intents.otterize.com/all-intents-removed"
-	OtterizeCreatedForServiceAnnotation                  = "intents.otterize.com/created-for-service"
-	OtterizeCreatedForIngressAnnotation                  = "intents.otterize.com/created-for-ingress"
-	OtterizeNetworkPolicyNameTemplate                    = "access-to-%s-from-%s"
-	OtterizeServiceNetworkPolicyNameTemplate             = "svc-access-to-%s-from-%s"
-	OtterizeNetworkPolicy                                = "intents.otterize.com/network-policy"
-	OtterizeSvcNetworkPolicy                             = "intents.otterize.com/svc-network-policy"
-	OtterizeNetworkPolicyServiceDefaultDeny              = "intents.otterize.com/network-policy-service-default-deny"
-	OtterizeNetworkPolicyExternalTraffic                 = "intents.otterize.com/network-policy-external-traffic"
-	ClientIntentsFinalizerName                           = "intents.otterize.com/client-intents-finalizer"
-	ProtectedServicesFinalizerName                       = "intents.otterize.com/protected-services-finalizer"
-	OtterizeIstioClientAnnotationKey                     = "intents.otterize.com/istio-client"
-	OtterizeClientServiceAccountAnnotation               = "intents.otterize.com/client-intents-service-account"
-	OtterizeSharedServiceAccountAnnotation               = "intents.otterize.com/shared-service-account"
-	OtterizeMissingSidecarAnnotation                     = "intents.otterize.com/service-missing-sidecar"
-	OtterizeServersWithoutSidecarAnnotation              = "intents.otterize.com/servers-without-sidecar"
-	OtterizeTargetServerIndexField                       = "spec.service.calls.server"
-	OtterizeKafkaServerConfigServiceNameField            = "spec.service.name"
-	OtterizeProtectedServiceNameIndexField               = "spec.name"
-	OtterizeFormattedTargetServerIndexField              = "formattedTargetServer"
-	EndpointsPodNamesIndexField                          = "endpointsPodNames"
-	IngressServiceNamesIndexField                        = "ingressServiceNames"
-	NetworkPoliciesByIngressNameIndexField               = "networkPoliciesByIngressName"
-	MaxOtterizeNameLength                                = 20
-	MaxNamespaceLength                                   = 20
-	OtterizeSvcEgressNetworkPolicyNameTemplate           = "svc-egress-to-%s-from-%s"
-	OtterizeSvcEgressNetworkPolicy                       = "intents.otterize.com/svc-egress-network-policy"
-	OtterizeSvcEgressNetworkPolicyTarget                 = "intents.otterize.com/svc-egress-network-policy-target"
-	OtterizeSvcEgressNetworkPolicyTargetService          = "intents.otterize.com/svc-egress-network-policy-target-service"
-	OtterizeSvcEgressNetworkPolicyTargetServiceNamespace = "intents.otterize.com/svc-egress-network-policy-target-service-namespace"
-	OtterizeEgressNetworkPolicyNameTemplate              = "egress-to-%s-from-%s"
-	OtterizeEgressNetworkPolicy                          = "intents.otterize.com/egress-network-policy"
-	OtterizeEgressNetworkPolicyTarget                    = "intents.otterize.com/egress-network-policy-target"
+	OtterizeAccessLabelPrefix                        = "intents.otterize.com/access"
+	OtterizeServiceAccessLabelPrefix                 = "intents.otterize.com/svc-access"
+	OtterizeAccessLabelKey                           = "intents.otterize.com/access-%s"
+	OtterizeExternalAccessLabelKey                   = "intents.otterize.com/external-access-%s"
+	OtterizeSvcAccessLabelKey                        = "intents.otterize.com/svc-access-%s"
+	OtterizeClientLabelKey                           = "intents.otterize.com/client"
+	OtterizeServiceLabelKey                          = "intents.otterize.com/service"
+	OtterizeOwnerKindLabelKey                        = "intents.otterize.com/owner-kind"
+	OtterizeServerLabelKeyDeprecated                 = "intents.otterize.com/server"
+	KubernetesStandardNamespaceNameLabelKey          = "kubernetes.io/metadata.name"
+	AllIntentsRemovedAnnotation                      = "intents.otterize.com/all-intents-removed"
+	OtterizeCreatedForServiceAnnotation              = "intents.otterize.com/created-for-service"
+	OtterizeCreatedForIngressAnnotation              = "intents.otterize.com/created-for-ingress"
+	OtterizeSingleNetworkPolicyNameTemplate          = "%s-access"
+	OtterizeNetworkPolicy                            = "intents.otterize.com/network-policy"
+	OtterizeSvcNetworkPolicy                         = "intents.otterize.com/svc-network-policy"
+	OtterizeNetworkPolicyServiceDefaultDeny          = "intents.otterize.com/network-policy-service-default-deny"
+	OtterizeNetworkPolicyExternalTraffic             = "intents.otterize.com/network-policy-external-traffic"
+	ClientIntentsFinalizerName                       = "intents.otterize.com/client-intents-finalizer"
+	ProtectedServicesFinalizerName                   = "intents.otterize.com/protected-services-finalizer"
+	OtterizeIstioClientAnnotationKeyDeprecated       = "intents.otterize.com/istio-client"
+	OtterizeIstioClientWithKindLabelKey              = "intents.otterize.com/istio-client-with-kind"
+	OtterizeClientServiceAccountAnnotation           = "intents.otterize.com/client-intents-service-account"
+	OtterizeSharedServiceAccountAnnotation           = "intents.otterize.com/shared-service-account"
+	OtterizeMissingSidecarAnnotation                 = "intents.otterize.com/service-missing-sidecar"
+	OtterizeServersWithoutSidecarAnnotation          = "intents.otterize.com/servers-without-sidecar"
+	OtterizePodCalledByAnnotationKey                 = "intents.otterize.com/called-by"
+	OtterizeLinkerdMeshTLSAnnotationKey              = "intents.otterize.com/linkerd-authenticates"
+	OtterizeLinkerdServerAnnotationKey               = "intents.otterize.com/linkerd-server"
+	OtterizeTargetServerIndexField                   = "spec.service.calls.server"
+	OtterizeKafkaServerConfigServiceNameField        = "spec.service.name"
+	OtterizeProtectedServiceNameIndexField           = "spec.name"
+	OtterizeFormattedTargetServerIndexField          = "formattedTargetServer"
+	OtterizeClientOnAccessAnnotationIndexField       = "clientOfAccessAnnotations"
+	OtterizeServerHasAnyCalledByAnnotationIndexField = "serverHasAnyCalledBy"
+	OtterizeServerHasAnyCalledByAnnotationValue      = "true"
+	EndpointsPodNamesIndexField                      = "endpointsPodNames"
+	IngressServiceNamesIndexField                    = "ingressServiceNames"
+	MaxOtterizeNameLength                            = 20
+	MaxNamespaceLength                               = 20
+	OtterizeSvcEgressNetworkPolicy                   = "intents.otterize.com/svc-egress-network-policy"
+	OtterizeEgressNetworkPolicy                      = "intents.otterize.com/egress-network-policy"
+	OtterizeInternetNetworkPolicy                    = "intents.otterize.com/egress-internet-network-policy"
+	OtterizeInternetTargetName                       = "internet"
+	KubernetesAPIServerName                          = "kubernetes"
+	KubernetesAPIServerNamespace                     = "default"
 )
 
-// +kubebuilder:validation:Enum=http;kafka;database;aws
+// +kubebuilder:validation:Enum=http;kafka;database;aws;gcp;azure;internet
 type IntentType string
 
 const (
@@ -87,6 +92,9 @@ const (
 	IntentTypeKafka    IntentType = "kafka"
 	IntentTypeDatabase IntentType = "database"
 	IntentTypeAWS      IntentType = "aws"
+	IntentTypeGCP      IntentType = "gcp"
+	IntentTypeAzure    IntentType = "azure"
+	IntentTypeInternet IntentType = "internet"
 )
 
 // +kubebuilder:validation:Enum=all;consume;produce;create;alter;delete;describe;ClusterAction;DescribeConfigs;AlterConfigs;IdempotentWrite
@@ -131,6 +139,92 @@ const (
 	DatabaseOperationDelete DatabaseOperation = "DELETE"
 )
 
+// +kubebuilder:validation:Enum=all;backup;create;delete;deleteissuers;get;getissuers;import;list;listissuers;managecontacts;manageissuers;purge;recover;restore;setissuers;update
+type AzureKeyVaultCertificatePermission string
+
+const (
+	AzureKeyVaultCertificatePermissionAll            AzureKeyVaultCertificatePermission = "all"
+	AzureKeyVaultCertificatePermissionBackup         AzureKeyVaultCertificatePermission = "backup"
+	AzureKeyVaultCertificatePermissionCreate         AzureKeyVaultCertificatePermission = "create"
+	AzureKeyVaultCertificatePermissionDelete         AzureKeyVaultCertificatePermission = "delete"
+	AzureKeyVaultCertificatePermissionDeleteIssuers  AzureKeyVaultCertificatePermission = "deleteissuers"
+	AzureKeyVaultCertificatePermissionGet            AzureKeyVaultCertificatePermission = "get"
+	AzureKeyVaultCertificatePermissionGetIssuers     AzureKeyVaultCertificatePermission = "getissuers"
+	AzureKeyVaultCertificatePermissionImport         AzureKeyVaultCertificatePermission = "import"
+	AzureKeyVaultCertificatePermissionList           AzureKeyVaultCertificatePermission = "list"
+	AzureKeyVaultCertificatePermissionListIssuers    AzureKeyVaultCertificatePermission = "listissuers"
+	AzureKeyVaultCertificatePermissionManageContacts AzureKeyVaultCertificatePermission = "managecontacts"
+	AzureKeyVaultCertificatePermissionManageIssuers  AzureKeyVaultCertificatePermission = "manageissuers"
+	AzureKeyVaultCertificatePermissionPurge          AzureKeyVaultCertificatePermission = "purge"
+	AzureKeyVaultCertificatePermissionRecover        AzureKeyVaultCertificatePermission = "recover"
+	AzureKeyVaultCertificatePermissionRestore        AzureKeyVaultCertificatePermission = "restore"
+	AzureKeyVaultCertificatePermissionSetIssuers     AzureKeyVaultCertificatePermission = "setissuers"
+	AzureKeyVaultCertificatePermissionUpdate         AzureKeyVaultCertificatePermission = "update"
+)
+
+// +kubebuilder:validation:Enum=all;backup;create;decrypt;delete;encrypt;get;getrotationpolicy;import;list;purge;recover;release;restore;rotate;setrotationpolicy;sign;unwrapkey;update;verify;wrapkey
+type AzureKeyVaultKeyPermission string
+
+const (
+	AzureKeyVaultKeyPermissionAll               AzureKeyVaultKeyPermission = "all"
+	AzureKeyVaultKeyPermissionBackup            AzureKeyVaultKeyPermission = "backup"
+	AzureKeyVaultKeyPermissionCreate            AzureKeyVaultKeyPermission = "create"
+	AzureKeyVaultKeyPermissionDecrypt           AzureKeyVaultKeyPermission = "decrypt"
+	AzureKeyVaultKeyPermissionDelete            AzureKeyVaultKeyPermission = "delete"
+	AzureKeyVaultKeyPermissionEncrypt           AzureKeyVaultKeyPermission = "encrypt"
+	AzureKeyVaultKeyPermissionGet               AzureKeyVaultKeyPermission = "get"
+	AzureKeyVaultKeyPermissionGetRotationPolicy AzureKeyVaultKeyPermission = "getrotationpolicy"
+	AzureKeyVaultKeyPermissionImport            AzureKeyVaultKeyPermission = "import"
+	AzureKeyVaultKeyPermissionList              AzureKeyVaultKeyPermission = "list"
+	AzureKeyVaultKeyPermissionPurge             AzureKeyVaultKeyPermission = "purge"
+	AzureKeyVaultKeyPermissionRecover           AzureKeyVaultKeyPermission = "recover"
+	AzureKeyVaultKeyPermissionRelease           AzureKeyVaultKeyPermission = "release"
+	AzureKeyVaultKeyPermissionRestore           AzureKeyVaultKeyPermission = "restore"
+	AzureKeyVaultKeyPermissionRotate            AzureKeyVaultKeyPermission = "rotate"
+	AzureKeyVaultKeyPermissionSetRotationPolicy AzureKeyVaultKeyPermission = "setrotationpolicy"
+	AzureKeyVaultKeyPermissionSign              AzureKeyVaultKeyPermission = "sign"
+	AzureKeyVaultKeyPermissionUnwrapKey         AzureKeyVaultKeyPermission = "unwrapkey"
+	AzureKeyVaultKeyPermissionUpdate            AzureKeyVaultKeyPermission = "update"
+	AzureKeyVaultKeyPermissionVerify            AzureKeyVaultKeyPermission = "verify"
+	AzureKeyVaultKeyPermissionWrapKey           AzureKeyVaultKeyPermission = "wrapkey"
+)
+
+// +kubebuilder:validation:Enum=all;backup;delete;get;list;purge;recover;restore;set
+type AzureKeyVaultSecretPermission string
+
+const (
+	AzureKeyVaultSecretPermissionAll     AzureKeyVaultSecretPermission = "all"
+	AzureKeyVaultSecretPermissionBackup  AzureKeyVaultSecretPermission = "backup"
+	AzureKeyVaultSecretPermissionDelete  AzureKeyVaultSecretPermission = "delete"
+	AzureKeyVaultSecretPermissionGet     AzureKeyVaultSecretPermission = "get"
+	AzureKeyVaultSecretPermissionList    AzureKeyVaultSecretPermission = "list"
+	AzureKeyVaultSecretPermissionPurge   AzureKeyVaultSecretPermission = "purge"
+	AzureKeyVaultSecretPermissionRecover AzureKeyVaultSecretPermission = "recover"
+	AzureKeyVaultSecretPermissionRestore AzureKeyVaultSecretPermission = "restore"
+	AzureKeyVaultSecretPermissionSet     AzureKeyVaultSecretPermission = "set"
+)
+
+// +kubebuilder:validation:Enum=all;backup;delete;deletesas;get;getsas;list;listsas;purge;recover;regeneratekey;restore;set;setsas;update
+type AzureKeyVaultStoragePermission string
+
+const (
+	AzureKeyVaultStoragePermissionAll           AzureKeyVaultStoragePermission = "all"
+	AzureKeyVaultStoragePermissionBackup        AzureKeyVaultStoragePermission = "backup"
+	AzureKeyVaultStoragePermissionDelete        AzureKeyVaultStoragePermission = "delete"
+	AzureKeyVaultStoragePermissionDeleteSas     AzureKeyVaultStoragePermission = "deletesas"
+	AzureKeyVaultStoragePermissionGet           AzureKeyVaultStoragePermission = "get"
+	AzureKeyVaultStoragePermissionGetSas        AzureKeyVaultStoragePermission = "getsas"
+	AzureKeyVaultStoragePermissionList          AzureKeyVaultStoragePermission = "list"
+	AzureKeyVaultStoragePermissionListSas       AzureKeyVaultStoragePermission = "listsas"
+	AzureKeyVaultStoragePermissionPurge         AzureKeyVaultStoragePermission = "purge"
+	AzureKeyVaultStoragePermissionRecover       AzureKeyVaultStoragePermission = "recover"
+	AzureKeyVaultStoragePermissionRegenerateKey AzureKeyVaultStoragePermission = "regeneratekey"
+	AzureKeyVaultStoragePermissionRestore       AzureKeyVaultStoragePermission = "restore"
+	AzureKeyVaultStoragePermissionSet           AzureKeyVaultStoragePermission = "set"
+	AzureKeyVaultStoragePermissionSetSas        AzureKeyVaultStoragePermission = "setsas"
+	AzureKeyVaultStoragePermissionUpdate        AzureKeyVaultStoragePermission = "update"
+)
+
 // IntentsSpec defines the desired state of ClientIntents
 type IntentsSpec struct {
 	Service Service  `json:"service" yaml:"service"`
@@ -139,10 +233,16 @@ type IntentsSpec struct {
 
 type Service struct {
 	Name string `json:"name" yaml:"name"`
+	//+optional
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
 }
 
 type Intent struct {
-	Name string `json:"name" yaml:"name"`
+	//+optional
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+
+	//+optional
+	Kind string `json:"kind,omitempty" yaml:"kind,omitempty"`
 
 	//+optional
 	Type IntentType `json:"type,omitempty" yaml:"type,omitempty"`
@@ -158,10 +258,34 @@ type Intent struct {
 
 	//+optional
 	AWSActions []string `json:"awsActions,omitempty" yaml:"awsActions,omitempty"`
+
+	//+optional
+	GCPPermissions []string `json:"gcpPermissions,omitempty" yaml:"gcpPermissions,omitempty"`
+
+	//+optional
+	AzureRoles []string `json:"azureRoles,omitempty" yaml:"azureRoles,omitempty"`
+
+	//+optional
+	AzureKeyVaultPolicy *AzureKeyVaultPolicy `json:"azureKeyVaultPolicy,omitempty" yaml:"azureKeyVaultPolicy,omitempty"`
+
+	//+optional
+	Internet *Internet `json:"internet,omitempty" yaml:"internet,omitempty"`
+}
+
+type Internet struct {
+	//+optional
+	Domains []string `json:"domains,omitempty" yaml:"domains,omitempty"`
+	//+optional
+	Ips []string `json:"ips,omitempty" yaml:"ips,omitempty"`
+	//+optional
+	Ports []int `json:"ports,omitempty" yaml:"ports,omitempty"`
 }
 
 type DatabaseResource struct {
-	Table      string              `json:"table" yaml:"table"`
+	DatabaseName string `json:"databaseName" yaml:"databaseName"`
+	//+optional
+	Table string `json:"table" yaml:"table"`
+	//+optional
 	Operations []DatabaseOperation `json:"operations" yaml:"operations"`
 }
 
@@ -175,23 +299,45 @@ type KafkaTopic struct {
 	Operations []KafkaOperation `json:"operations" yaml:"operations"`
 }
 
+type ResolvedIPs struct {
+	DNS string   `json:"dns,omitempty" yaml:"dns,omitempty"`
+	IPs []string `json:"ips,omitempty" yaml:"ips,omitempty"`
+}
+
+type AzureKeyVaultPolicy struct {
+	//+optional
+	CertificatePermissions []AzureKeyVaultCertificatePermission `json:"certificatePermissions,omitempty" yaml:"certificatePermissions,omitempty"`
+	//+optional
+	KeyPermissions []AzureKeyVaultKeyPermission `json:"keyPermissions,omitempty" yaml:"keyPermissions,omitempty"`
+	//+optional
+	SecretPermissions []AzureKeyVaultSecretPermission `json:"secretPermissions,omitempty" yaml:"secretPermissions,omitempty"`
+	//+optional
+	StoragePermissions []AzureKeyVaultStoragePermission `json:"storagePermissions,omitempty" yaml:"storagePermissions,omitempty"`
+}
+
 // IntentsStatus defines the observed state of ClientIntents
 type IntentsStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// upToDate field reflects whether the client intents have successfully been applied
+	// to the cluster to the state specified
+	// +optional
+	UpToDate bool `json:"upToDate"`
+	// The last generation of the intents that was successfully reconciled.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration"`
+	// +optional
+	ResolvedIPs []ResolvedIPs `json:"resolvedIPs,omitempty" yaml:"resolvedIPs,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
-//+kubebuilder:storageversion
 
 // ClientIntents is the Schema for the intents API
 type ClientIntents struct {
 	metav1.TypeMeta   `json:",inline" yaml:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
-	Spec   *IntentsSpec   `json:"spec,omitempty" yaml:"spec,omitempty"`
-	Status *IntentsStatus `json:"status,omitempty" yaml:"status,omitempty"`
+	Spec   *IntentsSpec  `json:"spec,omitempty" yaml:"spec,omitempty"`
+	Status IntentsStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -221,23 +367,35 @@ func (in *ClientIntents) GetFilteredCallsList(intentTypes ...IntentType) []Inten
 	})
 }
 
+func (in *ClientIntents) GetClientKind() string {
+	if in.Spec.Service.Kind == "" {
+		return serviceidentity.KindOtterizeLegacy
+	}
+	return in.Spec.Service.Kind
+}
+
 func (in *ClientIntents) GetIntentsLabelMapping(requestNamespace string) map[string]string {
 	otterizeAccessLabels := make(map[string]string)
 
 	for _, intent := range in.GetCallsList() {
-		if intent.Type == IntentTypeAWS || intent.Type == IntentTypeDatabase {
+		if intent.Type == IntentTypeAWS || intent.Type == IntentTypeGCP || intent.Type == IntentTypeAzure || intent.Type == IntentTypeDatabase {
 			continue
 		}
-		ns := intent.GetTargetServerNamespace(requestNamespace)
-		formattedOtterizeIdentity := GetFormattedOtterizeIdentity(intent.GetTargetServerName(), ns)
-		labelKey := fmt.Sprintf(OtterizeAccessLabelKey, formattedOtterizeIdentity)
+		targetServiceIdentity := intent.ToServiceIdentity(requestNamespace)
+		labelKey := fmt.Sprintf(OtterizeAccessLabelKey, targetServiceIdentity.GetFormattedOtterizeIdentityWithKind())
 		if intent.IsTargetServerKubernetesService() {
-			labelKey = fmt.Sprintf(OtterizeSvcAccessLabelKey, formattedOtterizeIdentity)
+			labelKey = fmt.Sprintf(OtterizeSvcAccessLabelKey, targetServiceIdentity.GetFormattedOtterizeIdentityWithKind())
 		}
 		otterizeAccessLabels[labelKey] = "true"
 	}
 
 	return otterizeAccessLabels
+}
+
+func (in *ClientIntents) GetDatabaseIntents() []Intent {
+	return lo.Filter(in.GetCallsList(), func(intent Intent, _ int) bool {
+		return intent.Type == IntentTypeDatabase
+	})
 }
 
 // GetTargetServerNamespace returns target namespace for intent if exists
@@ -261,12 +419,36 @@ func (in *Intent) GetTargetServerNamespace(intentsObjNamespace string) string {
 }
 
 func (in *Intent) IsTargetServerKubernetesService() bool {
-	return strings.HasPrefix(in.Name, "svc:")
+	return strings.HasPrefix(in.Name, "svc:") || in.Kind == serviceidentity.KindService
+}
+
+func (in *Intent) IsTargetTheKubernetesAPIServer(objectNamespace string) bool {
+	return in.GetTargetServerName() == KubernetesAPIServerName &&
+		in.GetTargetServerNamespace(objectNamespace) == KubernetesAPIServerNamespace
+}
+
+func (in *Intent) IsTargetInCluster() bool {
+	if in.Type == "" || in.Type == IntentTypeHTTP || in.Type == IntentTypeKafka {
+		return true
+	}
+	return false
+}
+
+func (in *Intent) IsTargetOutOfCluster() bool {
+	return !in.IsTargetInCluster()
 }
 
 // GetTargetServerName returns server's service name, without namespace, or the Kubernetes service without the `svc:` prefix
 func (in *Intent) GetTargetServerName() string {
 	var name string
+
+	if in.Type == IntentTypeInternet {
+		return OtterizeInternetTargetName
+	}
+
+	if in.Type == IntentTypeAWS || in.Type == IntentTypeGCP || in.Type == IntentTypeAzure || in.Type == IntentTypeDatabase {
+		return in.Name
+	}
 
 	if in.IsTargetServerKubernetesService() {
 		name = strings.ReplaceAll(in.Name, "svc:", "") // Replace so all chars are valid in K8s label
@@ -280,6 +462,16 @@ func (in *Intent) GetTargetServerName() string {
 	} else {
 		return nameWithNamespace[0]
 	}
+}
+
+func (in *Intent) GetTargetServerKind() string {
+	if in.Kind != "" {
+		return in.Kind
+	}
+	if in.IsTargetServerKubernetesService() {
+		return serviceidentity.KindService
+	}
+	return serviceidentity.KindOtterizeLegacy
 }
 
 func (in *Intent) GetServerFullyQualifiedName(intentsObjNamespace string) string {
@@ -306,6 +498,12 @@ func (in *Intent) typeAsGQLType() graphqlclient.IntentType {
 		return graphqlclient.IntentTypeDatabase
 	case IntentTypeAWS:
 		return graphqlclient.IntentTypeAws
+	case IntentTypeGCP:
+		return graphqlclient.IntentTypeGcp
+	case IntentTypeAzure:
+		return graphqlclient.IntentTypeAzure
+	case IntentTypeInternet:
+		return graphqlclient.IntentTypeInternet
 	default:
 		panic("Not supposed to reach here")
 	}
@@ -324,7 +522,7 @@ func (in *ClientIntents) GetServersWithoutSidecar() (sets.Set[string], error) {
 	serversList := make([]string, 0)
 	err := json.Unmarshal([]byte(servers), &serversList)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err)
 	}
 
 	return sets.New[string](serversList...), nil
@@ -333,10 +531,11 @@ func (in *ClientIntents) GetServersWithoutSidecar() (sets.Set[string], error) {
 func (in *ClientIntents) IsServerMissingSidecar(intent Intent) (bool, error) {
 	serversSet, err := in.GetServersWithoutSidecar()
 	if err != nil {
-		return false, err
+		return false, errors.Wrap(err)
 	}
-	serverIdentity := GetFormattedOtterizeIdentity(intent.GetTargetServerName(), intent.GetTargetServerNamespace(in.Namespace))
-	return serversSet.Has(serverIdentity), nil
+	serviceIdentity := intent.ToServiceIdentity(in.Namespace)
+	formattedServerIdentity := serviceIdentity.GetFormattedOtterizeIdentityWithoutKind()
+	return serversSet.Has(formattedServerIdentity), nil
 }
 
 func (in *ClientIntentsList) FormatAsOtterizeIntents() ([]*graphqlclient.IntentInput, error) {
@@ -344,12 +543,15 @@ func (in *ClientIntentsList) FormatAsOtterizeIntents() ([]*graphqlclient.IntentI
 	for _, clientIntents := range in.Items {
 		for _, intent := range clientIntents.GetCallsList() {
 			input := intent.ConvertToCloudFormat(clientIntents.Namespace, clientIntents.GetServiceName())
-			statusInput, err := clientIntentsStatusToCloudFormat(clientIntents, intent)
+			statusInput, ok, err := clientIntentsStatusToCloudFormat(clientIntents, intent)
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrap(err)
 			}
 
-			input.Status = statusInput
+			input.Status = nil
+			if ok {
+				input.Status = statusInput
+			}
 			otterizeIntents = append(otterizeIntents, lo.ToPtr(input))
 		}
 	}
@@ -357,7 +559,7 @@ func (in *ClientIntentsList) FormatAsOtterizeIntents() ([]*graphqlclient.IntentI
 	return otterizeIntents, nil
 }
 
-func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent) (*graphqlclient.IntentStatusInput, error) {
+func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent) (*graphqlclient.IntentStatusInput, bool, error) {
 	status := graphqlclient.IntentStatusInput{
 		IstioStatus: &graphqlclient.IstioStatusInput{},
 	}
@@ -365,37 +567,37 @@ func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent
 	serviceAccountName, ok := clientIntents.Annotations[OtterizeClientServiceAccountAnnotation]
 	if !ok {
 		// Status is not set, nothing to do
-		return nil, nil
+		return nil, false, nil
 	}
 
 	status.IstioStatus.ServiceAccountName = toPtrOrNil(serviceAccountName)
 	isSharedValue, ok := clientIntents.Annotations[OtterizeSharedServiceAccountAnnotation]
 	if !ok {
-		return nil, fmt.Errorf("missing annotation shared service account for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("missing annotation shared service account for client intents %s", clientIntents.Name)
 	}
 
 	isShared, err := strconv.ParseBool(isSharedValue)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse shared service account annotation for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("failed to parse shared service account annotation for client intents %s", clientIntents.Name)
 	}
 	status.IstioStatus.IsServiceAccountShared = lo.ToPtr(isShared)
 
 	clientMissingSidecarValue, ok := clientIntents.Annotations[OtterizeMissingSidecarAnnotation]
 	if !ok {
-		return nil, fmt.Errorf("missing annotation missing sidecar for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("missing annotation missing sidecar for client intents %s", clientIntents.Name)
 	}
 
 	clientMissingSidecar, err := strconv.ParseBool(clientMissingSidecarValue)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse missing sidecar annotation for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("failed to parse missing sidecar annotation for client intents %s", clientIntents.Name)
 	}
 	status.IstioStatus.IsClientMissingSidecar = lo.ToPtr(clientMissingSidecar)
 	isServerMissingSidecar, err := clientIntents.IsServerMissingSidecar(intent)
 	if err != nil {
-		return nil, err
+		return nil, false, errors.Wrap(err)
 	}
 	status.IstioStatus.IsServerMissingSidecar = lo.ToPtr(isServerMissingSidecar)
-	return &status, nil
+	return &status, true, nil
 }
 
 func toPtrOrNil(s string) *string {
@@ -453,6 +655,12 @@ func databaseOperationToCloud(op DatabaseOperation) graphqlclient.DatabaseOperat
 	}
 }
 
+func enumSliceToStrPtrSlice[T ~string](enumSlice []T) []*string {
+	return lo.Map(enumSlice, func(s T, i int) *string {
+		return lo.ToPtr(string(s))
+	})
+}
+
 func (in *Intent) ConvertToCloudFormat(resourceNamespace string, clientName string) graphqlclient.IntentInput {
 	otterizeTopics := lo.Map(in.Topics, func(topic KafkaTopic, i int) *graphqlclient.KafkaConfigInput {
 		return lo.ToPtr(graphqlclient.KafkaConfigInput{
@@ -482,7 +690,8 @@ func (in *Intent) ConvertToCloudFormat(resourceNamespace string, clientName stri
 	if in.DatabaseResources != nil {
 		intentInput.DatabaseResources = lo.Map(in.DatabaseResources, func(resource DatabaseResource, _ int) *graphqlclient.DatabaseConfigInput {
 			databaseConfigInput := graphqlclient.DatabaseConfigInput{
-				Table: lo.ToPtr(resource.Table),
+				Table:  lo.ToPtr(resource.Table),
+				Dbname: lo.ToPtr(resource.DatabaseName),
 				Operations: lo.Map(resource.Operations, func(operation DatabaseOperation, _ int) *graphqlclient.DatabaseOperation {
 					cloudOperation := databaseOperationToCloud(operation)
 					return &cloudOperation
@@ -492,8 +701,38 @@ func (in *Intent) ConvertToCloudFormat(resourceNamespace string, clientName stri
 		})
 	}
 
+	if in.Internet != nil {
+		intentInput.Internet = &graphqlclient.InternetConfigInput{}
+		if len(in.Internet.Domains) != 0 {
+			intentInput.Internet.Domains = lo.ToSlicePtr(in.Internet.Domains)
+		}
+		if len(in.Internet.Ips) != 0 {
+			intentInput.Internet.Ips = lo.ToSlicePtr(in.Internet.Ips)
+		}
+		if in.Internet.Ports != nil && len(in.Internet.Ports) != 0 {
+			intentInput.Internet.Ports = lo.ToSlicePtr(in.Internet.Ports)
+		}
+	}
+
 	if len(in.AWSActions) != 0 {
 		intentInput.AwsActions = lo.ToSlicePtr(in.AWSActions)
+	}
+
+	if len(in.AzureRoles) != 0 {
+		intentInput.AzureRoles = lo.ToSlicePtr(in.AzureRoles)
+	}
+
+	if in.AzureKeyVaultPolicy != nil {
+		intentInput.AzureKeyVaultPolicy = &graphqlclient.AzureKeyVaultPolicyInput{
+			CertificatePermissions: enumSliceToStrPtrSlice(in.AzureKeyVaultPolicy.CertificatePermissions),
+			KeyPermissions:         enumSliceToStrPtrSlice(in.AzureKeyVaultPolicy.KeyPermissions),
+			SecretPermissions:      enumSliceToStrPtrSlice(in.AzureKeyVaultPolicy.SecretPermissions),
+			StoragePermissions:     enumSliceToStrPtrSlice(in.AzureKeyVaultPolicy.StoragePermissions),
+		}
+	}
+
+	if len(in.GCPPermissions) != 0 {
+		intentInput.GcpPermissions = lo.ToSlicePtr(in.GCPPermissions)
 	}
 
 	if len(otterizeTopics) != 0 {
@@ -514,44 +753,6 @@ func intentsHTTPResourceToCloud(resource HTTPResource, index int) *graphqlclient
 	}
 
 	return &httpConfig
-}
-
-// GetFormattedOtterizeIdentity truncates names and namespaces to a 20 char len string (if required)
-// It also adds a short md5 hash of the full name+ns string and returns the formatted string
-// This is due to Kubernetes' limit on 63 char label keys/values
-func GetFormattedOtterizeIdentity(name, ns string) string {
-	// Get MD5 for full length "name-namespace" string
-	hash := md5.Sum([]byte(fmt.Sprintf("%s-%s", name, ns)))
-
-	// Truncate name and namespace to 20 chars each
-	if len(name) > MaxOtterizeNameLength {
-		name = name[:MaxOtterizeNameLength]
-	}
-
-	if len(ns) > MaxNamespaceLength {
-		ns = ns[:MaxNamespaceLength]
-	}
-	// A 6 char hash, even though truncated, leaves 2 ^ 48 combinations which should be enough
-	// for unique identities in a k8s cluster
-	hashSuffix := hex.EncodeToString(hash[:])[:6]
-
-	return fmt.Sprintf("%s-%s-%s", name, ns, hashSuffix)
-
-}
-
-// BuildPodLabelSelector returns a label selector to match the otterize server labels for an intents resource
-func (in *ClientIntents) BuildPodLabelSelector() (labels.Selector, error) {
-	labelSelector, err := labels.Parse(
-		fmt.Sprintf("%s=%s",
-			OtterizeServerLabelKey,
-			// Since all pods are also labeled with their server identity, we can use the Otterize server label
-			// To find all pods for this specific service
-			GetFormattedOtterizeIdentity(in.Spec.Service.Name, in.Namespace)))
-	if err != nil {
-		return nil, nil
-	}
-
-	return labelSelector, nil
 }
 
 func (in *ClientIntents) HasKafkaTypeInCallList() bool {

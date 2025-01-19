@@ -2,15 +2,14 @@ package intents_reconcilers
 
 import (
 	"context"
-	"fmt"
-	otterizev1alpha3 "github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
 	mocks "github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/mocks"
+	"github.com/otterize/intents-operator/src/shared/errors"
 	"github.com/otterize/intents-operator/src/shared/testbase"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,32 +51,31 @@ func (s *PodLabelReconcilerTestSuite) TestClientAccessLabelAdded() {
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			intents.Namespace = testNamespace
 			return nil
 		})
 
-	var intents otterizev1alpha3.ClientIntents
+	var intents otterizev2alpha1.ClientIntents
 	intents.Spec = &intentsSpec
 
 	listOption := &client.ListOptions{Namespace: testNamespace}
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		"intents.otterize.com/server": "test-client-test-namespace-537e87",
-	})
 
-	labelMatcher := client.MatchingLabelsSelector{Selector: labelSelector}
+	labelMatcher := map[string]string{
+		"intents.otterize.com/service": "test-client-test-namespace-537e87",
+	}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -125,32 +123,31 @@ func (s *PodLabelReconcilerTestSuite) TestClientAccessLabelAddedTruncatedNameAnd
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
-			intents.Namespace = testNamespace
+			intents.Namespace = longNamespace
 			return nil
 		})
 
-	var intents otterizev1alpha3.ClientIntents
+	var intents otterizev2alpha1.ClientIntents
 	intents.Spec = &intentsSpec
 
 	listOption := &client.ListOptions{Namespace: longNamespace}
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		"intents.otterize.com/server": "test-client-with-a-v-test-namespace-14e99d",
-	})
 
-	labelMatcher := client.MatchingLabelsSelector{Selector: labelSelector}
+	labelMatcher := map[string]string{
+		"intents.otterize.com/service": "test-client-with-a-v-test-namespace-with--c115d1",
+	}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -171,7 +168,7 @@ func (s *PodLabelReconcilerTestSuite) TestClientAccessLabelAddedTruncatedNameAnd
 			Namespace: testNamespace,
 			Labels: map[string]string{
 				"intents.otterize.com/access-test-server-test-namespace-with--a1ac14": "true",
-				"intents.otterize.com/client":                                         "test-client-with-a-v-test-namespace-14e99d",
+				"intents.otterize.com/client":                                         "test-client-with-a-v-test-namespace-with--c115d1",
 			},
 		},
 		Spec: v1.PodSpec{},
@@ -205,41 +202,40 @@ func (s *PodLabelReconcilerTestSuite) testClientAccessLabelRemovedWithParams(pod
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 
-	var deletedIntents otterizev1alpha3.ClientIntents
+	var deletedIntents otterizev2alpha1.ClientIntents
 	deletedIntents.Spec = &intentsSpec
 	deletedIntents.Namespace = testNamespace
 	deletedIntents.SetDeletionTimestamp(&metav1.Time{Time: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)})
 
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			*intents = deletedIntents
 			return nil
 		})
 
 	// Now the reconciler should handle the deletion of the client intents
 	listOption := &client.ListOptions{Namespace: testNamespace}
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		"intents.otterize.com/server": "test-client-test-namespace-537e87",
-	})
 
-	labelMatcher := client.MatchingLabelsSelector{Selector: labelSelector}
+	labelMatcher := map[string]string{
+		"intents.otterize.com/service": "test-client-test-namespace-537e87",
+	}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-pod",
 			Labels: map[string]string{
 				"intents.otterize.com/access-test-server-test-namespace-8ddecb": "true",
-				otterizev1alpha3.OtterizeClientLabelKey:                         "true",
+				otterizev2alpha1.OtterizeClientLabelKey:                         "true",
 			},
 			Annotations: podAnnotations,
 		},
@@ -256,12 +252,12 @@ func (s *PodLabelReconcilerTestSuite) testClientAccessLabelRemovedWithParams(pod
 		podAnnotations = make(map[string]string)
 	}
 
-	podAnnotations[otterizev1alpha3.AllIntentsRemovedAnnotation] = "true"
+	podAnnotations[otterizev2alpha1.AllIntentsRemovedAnnotation] = "true"
 	updatedPod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-pod",
 			Labels: map[string]string{
-				otterizev1alpha3.OtterizeClientLabelKey: "true",
+				otterizev2alpha1.OtterizeClientLabelKey: "true",
 			},
 			Annotations: podAnnotations,
 		},
@@ -288,33 +284,29 @@ func (s *PodLabelReconcilerTestSuite) TestAccessLabelChangedOnIntentsEdit() {
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			intents.Namespace = testNamespace
 			return nil
 		})
 
-	var intents otterizev1alpha3.ClientIntents
+	var intents otterizev2alpha1.ClientIntents
 	intents.Spec = &intentsSpec
 	intents.Namespace = testNamespace
 
 	listOption := &client.ListOptions{Namespace: testNamespace}
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		"intents.otterize.com/server": "test-client-test-namespace-537e87",
-	})
 
-	labelMatcher := client.MatchingLabelsSelector{Selector: labelSelector}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -323,11 +315,13 @@ func (s *PodLabelReconcilerTestSuite) TestAccessLabelChangedOnIntentsEdit() {
 		},
 	}
 
-	s.Client.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Eq(listOption), gomock.Eq(labelMatcher)).DoAndReturn(
+	s.Client.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Eq(listOption), gomock.Eq(client.MatchingLabels(map[string]string{
+		"intents.otterize.com/service": "test-client-test-namespace-537e87",
+	}))).DoAndReturn(
 		func(ctx context.Context, pds *v1.PodList, opts ...client.ListOption) error {
 			pds.Items = append(pds.Items, pod)
 			return nil
-		})
+		}).Times(2)
 
 	updatedPod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -349,19 +343,13 @@ func (s *PodLabelReconcilerTestSuite) TestAccessLabelChangedOnIntentsEdit() {
 
 	// Now all the way through again, but with a different server name
 
-	intentsSpec.Calls[0].Name = "test-server-2"
+	intentsSpec.Targets[0].Kubernetes.Name = "test-server-2"
 
-	emptyIntents = &otterizev1alpha3.ClientIntents{}
+	emptyIntents = &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			intents.Namespace = testNamespace
-			return nil
-		})
-
-	s.Client.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Eq(listOption), gomock.Eq(labelMatcher)).DoAndReturn(
-		func(ctx context.Context, pds *v1.PodList, opts ...client.ListOption) error {
-			pds.Items = append(pds.Items, pod)
 			return nil
 		})
 
@@ -398,18 +386,18 @@ func (s *PodLabelReconcilerTestSuite) TestPodLabelFinalizerAdded() {
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			return nil
 		})
@@ -434,19 +422,19 @@ func (s *PodLabelReconcilerTestSuite) TestPodLabelFinalizerRemoved() {
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	deletionTimestamp := &metav1.Time{Time: time.Now()}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			intents.DeletionTimestamp = deletionTimestamp
 			return nil
@@ -472,32 +460,31 @@ func (s *PodLabelReconcilerTestSuite) TestClientAccessLabelAddFailedPatch() {
 	}
 
 	serverName := "test-server"
-	intentsSpec := otterizev1alpha3.IntentsSpec{
-		Service: otterizev1alpha3.Service{Name: serviceName},
-		Calls: []otterizev1alpha3.Intent{
+	intentsSpec := otterizev2alpha1.IntentsSpec{
+		Workload: otterizev2alpha1.Workload{Name: serviceName},
+		Targets: []otterizev2alpha1.Target{
 			{
-				Name: serverName,
+				Kubernetes: &otterizev2alpha1.KubernetesTarget{Name: serverName},
 			},
 		},
 	}
 
-	emptyIntents := &otterizev1alpha3.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.Client.EXPECT().Get(gomock.Any(), req.NamespacedName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(ctx context.Context, name types.NamespacedName, intents *otterizev1alpha3.ClientIntents, options ...client.ListOption) error {
+		func(ctx context.Context, name types.NamespacedName, intents *otterizev2alpha1.ClientIntents, options ...client.ListOption) error {
 			intents.Spec = &intentsSpec
 			intents.Namespace = testNamespace
 			return nil
 		})
 
-	var intents otterizev1alpha3.ClientIntents
+	var intents otterizev2alpha1.ClientIntents
 	intents.Spec = &intentsSpec
 
 	listOption := &client.ListOptions{Namespace: testNamespace}
-	labelSelector := labels.SelectorFromSet(map[string]string{
-		"intents.otterize.com/server": "test-client-test-namespace-537e87",
-	})
 
-	labelMatcher := client.MatchingLabelsSelector{Selector: labelSelector}
+	labelMatcher := map[string]string{
+		"intents.otterize.com/service": "test-client-test-namespace-537e87",
+	}
 	pod := v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-pod",
@@ -524,7 +511,7 @@ func (s *PodLabelReconcilerTestSuite) TestClientAccessLabelAddFailedPatch() {
 		Spec: v1.PodSpec{},
 	}
 
-	s.Client.EXPECT().Patch(gomock.Any(), gomock.Eq(&updatedPod), gomock.Any()).Return(fmt.Errorf("Patch failed"))
+	s.Client.EXPECT().Patch(gomock.Any(), gomock.Eq(&updatedPod), gomock.Any()).Return(errors.Errorf("Patch failed"))
 
 	_, err := s.Reconciler.Reconcile(context.Background(), req)
 	s.Error(err)

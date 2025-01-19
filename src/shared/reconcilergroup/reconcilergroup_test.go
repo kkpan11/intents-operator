@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	otterizev1alpha2 "github.com/otterize/intents-operator/src/operator/api/v1alpha2"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
 	mocks "github.com/otterize/intents-operator/src/operator/controllers/intents_reconcilers/mocks"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
@@ -37,7 +37,7 @@ func (s *ReconcilerGroupTestSuite) SetupTest() {
 	s.group = NewGroup("test",
 		s.client,
 		&runtime.Scheme{},
-		&otterizev1alpha2.ClientIntents{},
+		&otterizev2alpha1.ClientIntents{},
 		testFinalizer,
 		nil,
 	)
@@ -59,9 +59,9 @@ func (t *TestReconciler) InjectRecorder(recorder record.EventRecorder) {
 }
 
 func (s *ReconcilerGroupTestSuite) ExpectIntentWithFinalizer() {
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.client.EXPECT().Get(gomock.Any(), types.NamespacedName{}, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *emptyIntents
 			controllerutil.AddFinalizer(intents, testFinalizer)
 			return nil
@@ -155,7 +155,7 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerAddedBefore() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).Return(nil)
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
@@ -176,7 +176,7 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerGetError() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).Return(errors.New("test error"))
 
 	res, err := s.group.Reconcile(context.Background(), reconcile.Request{NamespacedName: resourceName})
@@ -194,7 +194,7 @@ func (s *ReconcilerGroupTestSuite) TestDeletedObjectNothingRun() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	notFoundErr := k8serrors.NewNotFound(schema.GroupResource{}, resourceName.Name)
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).Return(notFoundErr)
 
@@ -213,11 +213,11 @@ func (s *ReconcilerGroupTestSuite) TestDoNothingIfFinalizerIsThere() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *intentsWithFinalizer
 			return nil
 		})
@@ -244,12 +244,12 @@ func (s *ReconcilerGroupTestSuite) TestRemoveLegacyFinalizer() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithLegacyFinalizers := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithLegacyFinalizers, legacyFinalizers[0])
 	controllerutil.AddFinalizer(intentsWithLegacyFinalizers, legacyFinalizers[1])
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			intentsWithLegacyFinalizers.DeepCopyInto(intents)
 			return nil
 		})
@@ -278,13 +278,13 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerRemoveAfter() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
 	intentsWithFinalizer.DeletionTimestamp = &v1.Time{Time: time.Date(1992, 4, 25, 19, 30, 0, 0, time.UTC)}
 
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *intentsWithFinalizer
 			return nil
 		})
@@ -308,13 +308,13 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerUpdateFailedAfterDelete() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
 	intentsWithFinalizer.DeletionTimestamp = &v1.Time{Time: time.Date(1992, 4, 25, 19, 30, 0, 0, time.UTC)}
 
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *intentsWithFinalizer
 			return nil
 		})
@@ -329,6 +329,35 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerUpdateFailedAfterDelete() {
 	s.Require().True(reconciler.Reconciled)
 }
 
+func (s *ReconcilerGroupTestSuite) TestFinalizerUpdateFailedAfterDelete_NotFound_Requeue() {
+	reconciler := &TestReconciler{Err: nil, Result: reconcile.Result{}}
+	s.group.AddToGroup(reconciler)
+
+	resourceName := types.NamespacedName{
+		Name:      "my-resource",
+		Namespace: "the-happy-place-we-live-in",
+	}
+
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
+	intentsWithFinalizer := emptyIntents.DeepCopy()
+	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
+	intentsWithFinalizer.DeletionTimestamp = &v1.Time{Time: time.Date(1992, 4, 25, 19, 30, 0, 0, time.UTC)}
+
+	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
+			*intents = *intentsWithFinalizer
+			return nil
+		})
+
+	intentsWithoutFinalizer := intentsWithFinalizer.DeepCopy()
+	controllerutil.RemoveFinalizer(intentsWithoutFinalizer, testFinalizer)
+	s.client.EXPECT().Update(gomock.Any(), gomock.Eq(intentsWithoutFinalizer)).Return(k8serrors.NewNotFound(schema.GroupResource{}, resourceName.Name))
+
+	res, err := s.group.Reconcile(context.Background(), reconcile.Request{NamespacedName: resourceName})
+	s.Require().NoError(err)
+	s.Require().True(res.Requeue)
+}
+
 func (s *ReconcilerGroupTestSuite) TestFinalizerNotDeletedIfReconcilerFailed() {
 	reconciler := &TestReconciler{Err: errors.New("test error"), Result: reconcile.Result{}}
 	s.group.AddToGroup(reconciler)
@@ -338,13 +367,13 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerNotDeletedIfReconcilerFailed() {
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
 	intentsWithFinalizer.DeletionTimestamp = &v1.Time{Time: time.Date(2015, 11, 10, 18, 7, 0, 0, time.UTC)}
 
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *intentsWithFinalizer
 			return nil
 		})
@@ -364,13 +393,13 @@ func (s *ReconcilerGroupTestSuite) TestFinalizerNotDeletedIfReconcilerRequeue() 
 		Namespace: "the-happy-place-we-live-in",
 	}
 
-	emptyIntents := &otterizev1alpha2.ClientIntents{}
+	emptyIntents := &otterizev2alpha1.ClientIntents{}
 	intentsWithFinalizer := emptyIntents.DeepCopy()
 	controllerutil.AddFinalizer(intentsWithFinalizer, testFinalizer)
 	intentsWithFinalizer.DeletionTimestamp = &v1.Time{Time: time.Date(1992, 4, 25, 19, 30, 0, 0, time.UTC)}
 
 	s.client.EXPECT().Get(gomock.Any(), resourceName, gomock.Eq(emptyIntents)).DoAndReturn(
-		func(_ context.Context, _ types.NamespacedName, intents *otterizev1alpha2.ClientIntents, _ ...client.GetOption) error {
+		func(_ context.Context, _ types.NamespacedName, intents *otterizev2alpha1.ClientIntents, _ ...client.GetOption) error {
 			*intents = *intentsWithFinalizer
 			return nil
 		})

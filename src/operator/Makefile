@@ -15,7 +15,7 @@ IMAGE_TAG_BASE ?= 353146681200.dkr.ecr.us-east-1.amazonaws.com/otterize
 # Image URL to use all building/pushing image targets
 IMG ?= $(IMAGE_TAG_BASE):operator-$(VERSION)
 
-LOCAL_IMAGE_TAG ?= 255.255.255
+LOCAL_IMAGE_TAG ?= 0.0.0
 OPERATOR_DEBUG_IMAGE ?= otterize/intents-operator:$(LOCAL_IMAGE_TAG)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
@@ -61,6 +61,7 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CONTROLLER_GEN) rbac:roleName=otterize-intents-operator-manager-role crd webhook paths="../..."
 	kubectl kustomize  ./config/webhook | sed -e "s/[']//g" > ./config/webhook/manifests-patched
 	cd ./config/crd && kubectl kustomize . | yq -s '"k8s.otterize.com_" + (.metadata.name | sub(".k8s.otterize.com", "")) + ".patched"'
+	cat ./config/rbac/role.yaml ./config/rbac/wildcard-patch > ./config/rbac/manifests-patched.yaml
 
 
 .PHONY: generate
@@ -137,7 +138,8 @@ deploy: manifests copy-manifests-to-helm helm-dependency
 deploy-local: manifests copy-manifests-to-helm helm-dependency ## Deploy images built locally into the cluster.
 	helm upgrade --install -n otterize-system --create-namespace otterize $(OTTERIZE_HELM_CHART_DIR) \
 	--set intentsOperator.operator.tag=$(LOCAL_IMAGE_TAG) \
-	--set intentsOperator.operator.pullPolicy=Never
+	--set intentsOperator.operator.pullPolicy=Never \
+	--set global.telemetry.enabled=false
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
@@ -155,7 +157,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 
 ## Tool Versions
-CONTROLLER_TOOLS_VERSION ?= v0.9.0
+CONTROLLER_TOOLS_VERSION ?= v0.14.0
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.

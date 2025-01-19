@@ -35,20 +35,6 @@ func (m *MockCloudClient) EXPECT() *MockCloudClientMockRecorder {
 	return m.recorder
 }
 
-// ApplyDatabaseIntent mocks base method.
-func (m *MockCloudClient) ApplyDatabaseIntent(ctx context.Context, intents []graphqlclient.IntentInput, action graphqlclient.DBPermissionChange) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ApplyDatabaseIntent", ctx, intents, action)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ApplyDatabaseIntent indicates an expected call of ApplyDatabaseIntent.
-func (mr *MockCloudClientMockRecorder) ApplyDatabaseIntent(ctx, intents, action interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyDatabaseIntent", reflect.TypeOf((*MockCloudClient)(nil).ApplyDatabaseIntent), ctx, intents, action)
-}
-
 // ReportAppliedIntents mocks base method.
 func (m *MockCloudClient) ReportAppliedIntents(ctx context.Context, namespace *string, intents []*graphqlclient.IntentInput) error {
 	m.ctrl.T.Helper()
@@ -63,6 +49,20 @@ func (mr *MockCloudClientMockRecorder) ReportAppliedIntents(ctx, namespace, inte
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportAppliedIntents", reflect.TypeOf((*MockCloudClient)(nil).ReportAppliedIntents), ctx, namespace, intents)
 }
 
+// ReportClientIntentStatuses mocks base method.
+func (m *MockCloudClient) ReportClientIntentStatuses(ctx context.Context, statuses []graphqlclient.ClientIntentStatusInput) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReportClientIntentStatuses", ctx, statuses)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReportClientIntentStatuses indicates an expected call of ReportClientIntentStatuses.
+func (mr *MockCloudClientMockRecorder) ReportClientIntentStatuses(ctx, statuses interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportClientIntentStatuses", reflect.TypeOf((*MockCloudClient)(nil).ReportClientIntentStatuses), ctx, statuses)
+}
+
 // ReportComponentStatus mocks base method.
 func (m *MockCloudClient) ReportComponentStatus(ctx context.Context, component graphqlclient.ComponentType) {
 	m.ctrl.T.Helper()
@@ -75,12 +75,38 @@ func (mr *MockCloudClientMockRecorder) ReportComponentStatus(ctx, component inte
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportComponentStatus", reflect.TypeOf((*MockCloudClient)(nil).ReportComponentStatus), ctx, component)
 }
 
-// ReportIntentsOperatorConfiguration mocks base method.
-func (m *MockCloudClient) ReportIntentsOperatorConfiguration(ctx context.Context, config graphqlclient.IntentsOperatorConfigurationInput) error {
+// ReportExternallyAccessibleServices mocks base method.
+func (m *MockCloudClient) ReportExternallyAccessibleServices(ctx context.Context, namespace string, services []graphqlclient.ExternallyAccessibleServiceInput) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReportIntentsOperatorConfiguration", ctx, config)
+	ret := m.ctrl.Call(m, "ReportExternallyAccessibleServices", ctx, namespace, services)
 	ret0, _ := ret[0].(error)
 	return ret0
+}
+
+// ReportExternallyAccessibleServices indicates an expected call of ReportExternallyAccessibleServices.
+func (mr *MockCloudClientMockRecorder) ReportExternallyAccessibleServices(ctx, namespace, services interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportExternallyAccessibleServices", reflect.TypeOf((*MockCloudClient)(nil).ReportExternallyAccessibleServices), ctx, namespace, services)
+}
+
+// ReportIntentEvents mocks base method.
+func (m *MockCloudClient) ReportIntentEvents(ctx context.Context, events []graphqlclient.ClientIntentEventInput) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReportIntentEvents", ctx, events)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ReportIntentEvents indicates an expected call of ReportIntentEvents.
+func (mr *MockCloudClientMockRecorder) ReportIntentEvents(ctx, events interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReportIntentEvents", reflect.TypeOf((*MockCloudClient)(nil).ReportIntentEvents), ctx, events)
+}
+
+// ReportIntentsOperatorConfiguration mocks base method.
+func (m *MockCloudClient) ReportIntentsOperatorConfiguration(ctx context.Context, config graphqlclient.IntentsOperatorConfigurationInput) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "ReportIntentsOperatorConfiguration", ctx, config)
 }
 
 // ReportIntentsOperatorConfiguration indicates an expected call of ReportIntentsOperatorConfiguration.

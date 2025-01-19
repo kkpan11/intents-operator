@@ -3,7 +3,8 @@ package kafka_server_config_reconcilers
 import (
 	"context"
 	"fmt"
-	otterizev1alpha3 "github.com/otterize/intents-operator/src/operator/api/v1alpha3"
+	otterizev2alpha1 "github.com/otterize/intents-operator/src/operator/api/v2alpha1"
+	"github.com/otterize/intents-operator/src/shared/errors"
 	"github.com/otterize/intents-operator/src/shared/injectablerecorder"
 	"github.com/otterize/intents-operator/src/shared/telemetries/telemetriesgql"
 	"github.com/otterize/intents-operator/src/shared/telemetries/telemetrysender"
@@ -28,18 +29,18 @@ func NewTelemetryReconciler(client client.Client) *TelemetryReconciler {
 }
 
 func (r *TelemetryReconciler) Reconcile(ctx context.Context, req reconcile.Request) (ctrl.Result, error) {
-	kafkaServerConfig := &otterizev1alpha3.KafkaServerConfig{}
+	kafkaServerConfig := &otterizev2alpha1.KafkaServerConfig{}
 	err := r.Get(ctx, req.NamespacedName, kafkaServerConfig)
 	if k8serrors.IsNotFound(err) {
 		return ctrl.Result{}, nil
 	}
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, errors.Wrap(err)
 	}
 
 	anonymizedServerName := telemetrysender.Anonymize(fmt.Sprintf("%s/%s",
 		kafkaServerConfig.Namespace,
-		kafkaServerConfig.Spec.Service.Name,
+		kafkaServerConfig.Spec.Workload.Name,
 	))
 
 	if !kafkaServerConfig.DeletionTimestamp.IsZero() {

@@ -21,14 +21,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/otterize/intents-operator/src/shared/errors"
+	"k8s.io/apimachinery/pkg/labels"
+	"strconv"
+	"strings"
+
 	"github.com/otterize/intents-operator/src/shared/otterizecloud/graphqlclient"
 	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"strconv"
-	"strings"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -43,7 +45,7 @@ const (
 	OtterizeServerLabelKey                    = "intents.otterize.com/server"
 	OtterizeKubernetesServiceLabelKeyPrefix   = "intents.otterize.com/k8s-svc"
 	OtterizeKubernetesServiceLabelKey         = "intents.otterize.com/k8s-svc-%s"
-	OtterizeNamespaceLabelKey                 = "intents.otterize.com/namespace-name"
+	KubernetesStandardNamespaceNameLabelKey   = "kubernetes.io/metadata.name"
 	AllIntentsRemovedAnnotation               = "intents.otterize.com/all-intents-removed"
 	OtterizeCreatedForServiceAnnotation       = "intents.otterize.com/created-for-service"
 	OtterizeCreatedForIngressAnnotation       = "intents.otterize.com/created-for-ingress"
@@ -149,7 +151,10 @@ type Intent struct {
 }
 
 type DatabaseResource struct {
-	Table      string              `json:"table" yaml:"table"`
+	DatabaseName string `json:"databaseName" yaml:"databaseName"`
+	//+optional
+	Table string `json:"table" yaml:"table"`
+	//+optional
 	Operations []DatabaseOperation `json:"operations" yaml:"operations"`
 }
 
@@ -165,8 +170,9 @@ type KafkaTopic struct {
 
 // IntentsStatus defines the observed state of ClientIntents
 type IntentsStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// upToDate field reflects whether the client intents have successfully been applied
+	// to the cluster to the state specified
+	UpToDate bool `json:"upToDate,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -177,8 +183,8 @@ type ClientIntents struct {
 	metav1.TypeMeta   `json:",inline" yaml:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 
-	Spec   *IntentsSpec   `json:"spec,omitempty" yaml:"spec,omitempty"`
-	Status *IntentsStatus `json:"status,omitempty" yaml:"status,omitempty"`
+	Spec   *IntentsSpec  `json:"spec,omitempty" yaml:"spec,omitempty"`
+	Status IntentsStatus `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -300,7 +306,7 @@ func (in *ClientIntents) GetServersWithoutSidecar() (sets.Set[string], error) {
 	serversList := make([]string, 0)
 	err := json.Unmarshal([]byte(servers), &serversList)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err)
 	}
 
 	return sets.New[string](serversList...), nil
@@ -309,7 +315,7 @@ func (in *ClientIntents) GetServersWithoutSidecar() (sets.Set[string], error) {
 func (in *ClientIntents) IsServerMissingSidecar(intent Intent) (bool, error) {
 	serversSet, err := in.GetServersWithoutSidecar()
 	if err != nil {
-		return false, err
+		return false, errors.Wrap(err)
 	}
 	serverIdentity := GetFormattedOtterizeIdentity(intent.GetTargetServerName(), intent.GetTargetServerNamespace(in.Namespace))
 	return serversSet.Has(serverIdentity), nil
@@ -320,12 +326,16 @@ func (in *ClientIntentsList) FormatAsOtterizeIntents() ([]*graphqlclient.IntentI
 	for _, clientIntents := range in.Items {
 		for _, intent := range clientIntents.GetCallsList() {
 			input := intent.ConvertToCloudFormat(clientIntents.Namespace, clientIntents.GetServiceName())
-			statusInput, err := clientIntentsStatusToCloudFormat(clientIntents, intent)
+			statusInput, ok, err := clientIntentsStatusToCloudFormat(clientIntents, intent)
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrap(err)
 			}
 
-			input.Status = statusInput
+			input.Status = nil
+
+			if ok {
+				input.Status = statusInput
+			}
 			otterizeIntents = append(otterizeIntents, lo.ToPtr(input))
 		}
 	}
@@ -333,7 +343,7 @@ func (in *ClientIntentsList) FormatAsOtterizeIntents() ([]*graphqlclient.IntentI
 	return otterizeIntents, nil
 }
 
-func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent) (*graphqlclient.IntentStatusInput, error) {
+func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent) (*graphqlclient.IntentStatusInput, bool, error) {
 	status := graphqlclient.IntentStatusInput{
 		IstioStatus: &graphqlclient.IstioStatusInput{},
 	}
@@ -341,37 +351,38 @@ func clientIntentsStatusToCloudFormat(clientIntents ClientIntents, intent Intent
 	serviceAccountName, ok := clientIntents.Annotations[OtterizeClientServiceAccountAnnotation]
 	if !ok {
 		// Status is not set, nothing to do
-		return nil, nil
+		return nil, false, nil
 	}
 
 	status.IstioStatus.ServiceAccountName = toPtrOrNil(serviceAccountName)
 	isSharedValue, ok := clientIntents.Annotations[OtterizeSharedServiceAccountAnnotation]
-	if !ok {
-		return nil, fmt.Errorf("missing annotation shared service account for client intents %s", clientIntents.Name)
+	isShared := false
+	if ok {
+		parsedIsShared, err := strconv.ParseBool(isSharedValue)
+		if err != nil {
+			return nil, false, errors.Errorf("failed to parse shared service account annotation for client intents %s", clientIntents.Name)
+		}
+		isShared = parsedIsShared
 	}
 
-	isShared, err := strconv.ParseBool(isSharedValue)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse shared service account annotation for client intents %s", clientIntents.Name)
-	}
 	status.IstioStatus.IsServiceAccountShared = lo.ToPtr(isShared)
 
 	clientMissingSidecarValue, ok := clientIntents.Annotations[OtterizeMissingSidecarAnnotation]
 	if !ok {
-		return nil, fmt.Errorf("missing annotation missing sidecar for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("missing annotation missing sidecar for client intents %s", clientIntents.Name)
 	}
 
 	clientMissingSidecar, err := strconv.ParseBool(clientMissingSidecarValue)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse missing sidecar annotation for client intents %s", clientIntents.Name)
+		return nil, false, errors.Errorf("failed to parse missing sidecar annotation for client intents %s", clientIntents.Name)
 	}
 	status.IstioStatus.IsClientMissingSidecar = lo.ToPtr(clientMissingSidecar)
 	isServerMissingSidecar, err := clientIntents.IsServerMissingSidecar(intent)
 	if err != nil {
-		return nil, err
+		return nil, false, errors.Wrap(err)
 	}
 	status.IstioStatus.IsServerMissingSidecar = lo.ToPtr(isServerMissingSidecar)
-	return &status, nil
+	return &status, true, nil
 }
 
 func toPtrOrNil(s string) *string {
@@ -520,7 +531,7 @@ func (in *ClientIntents) BuildPodLabelSelector() (labels.Selector, error) {
 			// To find all pods for this specific service
 			GetFormattedOtterizeIdentity(in.Spec.Service.Name, in.Namespace)))
 	if err != nil {
-		return nil, nil
+		return nil, errors.Wrap(err)
 	}
 
 	return labelSelector, nil
